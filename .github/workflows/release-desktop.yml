@@ -53,12 +53,35 @@ jobs:
       - name: Prepare bundled local runtime
         run: npm run desktop:prepare
 
-      - name: Build and publish Windows installer
+      - name: Build Windows installer (do not publish from electron-builder)
+        run: npx electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never
+
+      - name: Publish installer to GitHub Release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELAY_GITHUB_OWNER: ${{ github.repository_owner }}
-          RELAY_GITHUB_REPO: ${{ github.event.repository.name }}
-        run: npx electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish always
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          $tag = "v$version"
+          $assets = @(
+            Get-ChildItem 'release/desktop/Relay-Setup-*.exe' -ErrorAction SilentlyContinue
+            Get-ChildItem 'release/desktop/*.blockmap' -ErrorAction SilentlyContinue
+            Get-Item 'release/desktop/latest.yml' -ErrorAction SilentlyContinue
+          )
+          if ($assets.Count -eq 0 -or -not ($assets.Name -match '^Relay-Setup-.*\.exe$')) {
+            throw "The installer EXE was not generated in release/desktop."
+          }
+          $assetPaths = @($assets | ForEach-Object { $_.FullName })
+          gh release view $tag --repo $env:GH_REPO *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assetPaths --clobber --repo $env:GH_REPO
+          } else {
+            gh release create $tag @assetPaths --title "Relay $version" --notes "Relay Desktop Windows x64 installer." --target $env:GITHUB_SHA --repo $env:GH_REPO
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release upload failed for $tag."
+          }
 
       - name: Keep installer artifacts available
         if: always()

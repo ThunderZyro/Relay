@@ -93,10 +93,19 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
  </main>;
 }
 
+function PasswordRecovery({reset=false}:{reset?:boolean}){
+ const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [notice,setNotice]=useState('');const navigate=useNavigate();const toast=useToast();
+ const submit=async(e:React.FormEvent)=>{e.preventDefault();setBusy(true);setError('');setNotice('');try{
+  if(reset){const token=new URLSearchParams(window.location.search).get('token')||'';await post('/auth/reset-password',{token,password});toast.show('Password updated. Sign in with your new password.','success');navigate('/login');}
+  else{const result=await post<{message:string}>('/auth/forgot-password',{email});setNotice(result.message||'If that email belongs to a Relay account, a reset link is on its way.');}
+ }catch(err:any){setError(err.message||'Relay could not complete that request.');}finally{setBusy(false);}};
+ return <main className="auth-screen"><div className="auth-simple"><Link to="/login" className="auth-brand"><span className="brand-mark">R</span><span>relay</span></Link><h1 className="auth-tagline">{reset?'Choose a new password.':'Get back into Relay.'}</h1><section className="auth-form-side"><div className="auth-form-top">Remembered it? <Link to="/login">Sign in</Link></div><div className="auth-card"><div className="auth-form-heading"><h1>{reset?'Reset your password':'Password recovery'}</h1><p>{reset?'Choose a new password for your Relay account.':'We will email you a secure, one-time reset link.'}</p></div><form className="form-stack" onSubmit={submit}>{reset?<Field label="New password"><input type="password" autoComplete="new-password" minLength={10} maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 10 characters"/></Field>:<Field label="Account email"><input type="email" autoComplete="email" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></Field>}{error&&<div className="form-error" role="alert">{error}</div>}{notice&&<div className="form-success" role="status">{notice}</div>}<Button type="submit" disabled={busy}>{busy?'Please wait…':reset?'Update password':'Send reset link'} <ArrowRight size={16}/></Button></form></div></section></div></main>;
+}
+
 function Protected(){const {user,loading}=useAuth();if(loading)return <Loading label="Checking session"/>;if(!user)return <Navigate to="/login" replace/>;return <Shell/>;}
 function NotFound(){return <div className="not-found"><div className="notfound-code">404</div><h1>Lost in the channels?</h1><p>This route does not exist. It happens. URLs are surprisingly easy to mistype.</p><Link to="/home" className="btn primary"><ArrowLeft size={16}/> Back to Relay</Link></div>;}
 function AppRoutes(){const {user,loading}=useAuth();if(loading)return <Loading label="Starting Relay"/>;return <Routes>
- <Route path="/login" element={<AuthScreen mode="login"/>}/><Route path="/register" element={<AuthScreen mode="register"/>}/><Route path="/forgot-password" element={<AuthScreen mode="forgot"/>}/>
+ <Route path="/login" element={<AuthScreen mode="login"/>}/><Route path="/register" element={<AuthScreen mode="register"/>}/><Route path="/forgot-password" element={<PasswordRecovery/>}/><Route path="/reset-password" element={<PasswordRecovery reset/>}/>
  <Route element={<Protected/>}>
   <Route path="/" element={<Navigate to="/home" replace/>}/><Route path="/home" element={<HomePage/>}/><Route path="/channels/@me" element={<HomePage/>}/><Route path="/channels/@me/:conversationId" element={<DmPage/>}/>
   <Route path="/channels/:serverId/:channelId?" element={<ChannelPage/>}/><Route path="/discover" element={<DiscoverPage/>}/><Route path="/friends" element={<FriendsPage/>}/><Route path="/events" element={<EventsPage/>}/><Route path="/inbox" element={<InboxPage/>}/><Route path="/help" element={<HelpPage/>}/>

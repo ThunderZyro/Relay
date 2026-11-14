@@ -1524,3 +1524,11 @@ body {
 .side-panel{background:var(--panel)}
 .server-rail{background:var(--bg);border-right:1px solid var(--line)}
 .user-panel{background:var(--panel-2)}
+
+/* Relay usability pass: history controls and quieter feedback */
+.load-older-wrap{display:flex;justify-content:center;padding:14px 12px 18px}
+.load-older{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:7px;padding:7px 12px;font-size:11px;cursor:pointer}
+.load-older:hover:not(:disabled){background:var(--panel-2);color:var(--text);border-color:var(--line-strong)}
+.load-older:disabled{opacity:.55;cursor:wait}
+.form-success{border:1px solid color-mix(in srgb,var(--good) 40%,var(--line));background:color-mix(in srgb,var(--good) 10%,var(--panel));color:var(--text);padding:10px 12px;border-radius:7px;font-size:12px;line-height:1.5}
+.message-list{scroll-behavior:smooth}

@@ -80,7 +80,7 @@ function directRealtimeConnectionString() {
   try {
     const parsed=new URL(databaseUrl);
     if(parsed.hostname.endsWith('.neon.tech')) {
-      parsed.hostname=parsed.hostname.replace(/-pooler(?=\\.)/,'');
+      parsed.hostname=parsed.hostname.replace('-pooler.','.');
     }
     return parsed.toString();
   } catch {

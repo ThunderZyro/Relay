@@ -173,7 +173,24 @@ function VoiceJoin({channelId}:{channelId:string}){
 
 export function DmPage(){
  const {conversationId}=useParams();const {user}=useAuth();const toast=useToast();const navigate=useNavigate();const [conversations,setConversations]=useState<any[]>([]);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [messageSearchOpen,setMessageSearchOpen]=useState(false);const [messageSearch,setMessageSearch]=useState('');
- useEffect(()=>{api<any>('/dms').then(r=>setConversations(r.conversations||[])).catch((e:any)=>toast.show(e.message,'error'));},[]);
+ useEffect(()=>{
+  let active=true;
+  const refresh=async()=>{
+   try{
+    const r=await api<any>('/dms');
+    if(!active)return;
+    const next=r.conversations||[];
+    setConversations(next);
+    if(conversationId&&!next.some((conversation:any)=>conversation.id===conversationId)){
+     navigate('/channels/@me',{replace:true});
+     toast.show('You no longer have access to that conversation.','info');
+    }
+   }catch(e:any){if(active)toast.show(e.message,'error');}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>void refresh(),15000);
+  return()=>{active=false;window.clearInterval(timer);};
+ },[conversationId,navigate,toast]);
  const dm=conversations.find(d=>d.id===conversationId);const others=dm?.members?.filter((m:any)=>m.id!==user?.id)||[];const title=dm?.name||others.map((m:any)=>m.username).join(', ')||'Direct messages';const chat=useRoomMessages(conversationId,true);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
  if(!conversationId)return <div className="dm-empty-stage"><div className="dm-empty-illustration"><MessageCircle size={34}/><span>R</span></div><p className="dm-empty-eyebrow">RELAY MESSAGES</p><h2>Your conversations, all together.</h2><p className="dm-empty-copy">Pick a chat from the list, message a friend, or bring your group into one place.</p><Link className="btn primary" to="/friends"><MessageSquarePlus size={16}/> Start a conversation</Link></div>;

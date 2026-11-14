@@ -19,24 +19,68 @@ import { db, PERMISSIONS } from './db.js';
 const app = express();
 const server = http.createServer(app);
 const origin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const allowedOrigins = new Set(
+  [origin, ...(process.env.ALLOWED_ORIGINS || '').split(',')]
+    .map(value => value.trim())
+    .filter(Boolean)
+    .map(value => {
+      try { return new URL(value).origin; }
+      catch { throw new Error(`Invalid Relay allowed origin: ${value}`); }
+    })
+);
 const isProd = process.env.NODE_ENV === 'production';
 const cookieSecure = process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === 'true' : isProd;
 const cookieSameSite = process.env.COOKIE_SAME_SITE === 'lax' ? 'lax' : process.env.COOKIE_SAME_SITE === 'none' ? 'none' : (isProd ? 'none' : 'lax');
 const PORT = Number(process.env.PORT || 3001);
 const sessionSecret = process.env.SESSION_SECRET || 'development-only-change-this-secret-before-deploying';
 if (isProd && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) throw new Error('Production requires a SESSION_SECRET of at least 32 characters.');
-const maxUpload = Number(process.env.MAX_UPLOAD_MB || 10) * 1024 * 1024;
+function positiveSetting(name: string, fallback: number) {
+  const value = Number(process.env[name] || fallback);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number.`);
+  return value;
+}
+const maxUpload = positiveSetting('MAX_UPLOAD_MB', 10) * 1024 * 1024;
+const maxUserStorageBytes = positiveSetting('MAX_USER_STORAGE_MB', 500) * 1024 * 1024;
+const stagedUploadTtlHours = positiveSetting('STAGED_UPLOAD_TTL_HOURS', 24);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadDir = path.resolve(process.cwd(), process.env.UPLOAD_DIR || '../uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 
 app.set('trust proxy', isProd ? 1 : false);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' }, contentSecurityPolicy: false }));
-app.use(cors({ origin, credentials: true }));
+app.use(cors({
+  origin: (requestOrigin, callback) => callback(null, !!requestOrigin && allowedOrigins.has(requestOrigin)),
+  credentials: true
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
-const io = new SocketServer(server, { cors: { origin, credentials: true }, maxHttpBufferSize: 1e6 });
+// Cookie-authenticated mutations require a trusted browser origin and a
+// client-only header that ordinary cross-origin forms cannot send.
+const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use('/api', (req, res, next) => {
+  if (safeMethods.has(req.method)) return next();
+  const requestOrigin = req.get('origin');
+  if (!requestOrigin || !allowedOrigins.has(requestOrigin) || req.get('x-relay-request') !== '1') {
+    return fail(res, 403, 'This request did not pass Relay origin verification.');
+  }
+  return next();
+});
+
+const io = new SocketServer(server, {
+  cors: { origin: [...allowedOrigins], credentials: true },
+  allowRequest: (request, callback) => {
+    const requestOrigin = request.headers.origin;
+    callback(null, typeof requestOrigin === 'string' && allowedOrigins.has(requestOrigin));
+  },
+  maxHttpBufferSize: 1e6
+});
+function disconnectSessionSockets(sessionId: string) {
+  io.in(`session:${sessionId}`).disconnectSockets(true);
+}
+function disconnectUserSockets(userId: string) {
+  io.in(`user:${userId}`).disconnectSockets(true);
+}
 type AuthedRequest = Request & { user?: { id: string; username: string; email: string } };
 const sha = (value: string) => crypto.createHmac('sha256', sessionSecret).update(value).digest('hex');
 const id = () => nanoid(16);
@@ -105,7 +149,7 @@ app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
   if (!parsed.success) return fail(res, 400, parsed.error.issues[0]?.message || 'Check your details.');
   const email = parsed.data.email.toLowerCase();
   const username = parsed.data.username;
-  if (db.prepare('SELECT 1 FROM users WHERE email=? OR username=? COLLATE NOCASE').get(email, username)) return fail(res, 409, 'That email or username is already in use.');
+  if (db.prepare('SELECT 1 FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(email, username)) return fail(res, 409, 'That email or username is already in use.');
   const userId = id();
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
   db.prepare('INSERT INTO users(id,email,username,password_hash) VALUES(?,?,?,?)').run(userId,email,username,passwordHash);
@@ -116,7 +160,7 @@ app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
 app.post('/api/auth/login', authLimiter, asyncRoute(async (req,res) => {
   const parsed = z.object({ login:z.string().min(1).max(254), password:z.string().min(1).max(128) }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,'Enter your email or username and password.');
-  const row = db.prepare('SELECT * FROM users WHERE email=? COLLATE NOCASE OR username=? COLLATE NOCASE').get(parsed.data.login,parsed.data.login) as any;
+  const row = db.prepare('SELECT * FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(parsed.data.login,parsed.data.login) as any;
   if (!row || !(await bcrypt.compare(parsed.data.password,row.password_hash))) return fail(res,401,'Those sign-in details do not match.');
   createSession(req,res,row.id);
   res.json({ user:{...userPublic(row),email:row.email} });
@@ -130,7 +174,11 @@ function createSession(req: Request,res: Response,userId: string) {
 }
 app.post('/api/auth/logout', requireAuth, (req: AuthedRequest,res) => {
   const token = req.cookies?.relay_session;
-  if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha(token));
+  if (token) {
+    const session = db.prepare('SELECT id FROM sessions WHERE token_hash=? AND user_id=?').get(sha(token), req.user!.id) as any;
+    db.prepare('DELETE FROM sessions WHERE token_hash=? AND user_id=?').run(sha(token), req.user!.id);
+    if (session) disconnectSessionSockets(session.id);
+  }
   res.clearCookie('relay_session',{httpOnly:true,sameSite:cookieSameSite,secure:cookieSecure,path:'/'});
   res.json({ok:true});
 });
@@ -149,7 +197,7 @@ app.patch('/api/profile', requireAuth, (req: AuthedRequest,res) => {
   const parsed = z.object({ username:z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/).optional(), bio:z.string().max(300).optional(), status_text:z.string().max(80).optional(), avatar:z.string().max(500).nullable().optional(), banner:z.string().max(500).nullable().optional() }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,parsed.error.issues[0]?.message||'Invalid profile values.');
   const p=parsed.data;
-  if (p.username && db.prepare('SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id<>?').get(p.username,req.user!.id)) return fail(res,409,'That username is already taken.');
+  if (p.username && db.prepare('SELECT 1 FROM users WHERE LOWER(username)=LOWER(?) AND id<>?').get(p.username,req.user!.id)) return fail(res,409,'That username is already taken.');
   const keys=Object.keys(p) as (keyof typeof p)[];
   if (keys.length) {
     const sets=keys.map(k=>`${k}=?`).join(',');
@@ -163,8 +211,10 @@ app.get('/api/sessions', requireAuth, (req: AuthedRequest,res) => {
   res.json({sessions:db.prepare('SELECT id,user_agent,created_at,last_active,expires_at FROM sessions WHERE user_id=? ORDER BY created_at DESC').all(req.user!.id)});
 });
 app.delete('/api/sessions/:sessionId', requireAuth, (req: AuthedRequest,res) => {
-  const result=db.prepare('DELETE FROM sessions WHERE id=? AND user_id=?').run(req.params.sessionId,req.user!.id);
-  if (!result.changes) return fail(res,404,'Session not found.');
+  const session = db.prepare('SELECT id FROM sessions WHERE id=? AND user_id=?').get(req.params.sessionId, req.user!.id) as any;
+  if (!session) return fail(res,404,'Session not found.');
+  db.prepare('DELETE FROM sessions WHERE id=? AND user_id=?').run(session.id,req.user!.id);
+  disconnectSessionSockets(session.id);
   res.json({ok:true});
 });
 app.put('/api/account/password', requireAuth, asyncRoute(async (req,res) => {
@@ -172,8 +222,12 @@ app.put('/api/account/password', requireAuth, asyncRoute(async (req,res) => {
   if(!p.success)return fail(res,400,'New password must be at least 10 characters.');
   const row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.user!.id) as any;
   if(!row || !(await bcrypt.compare(p.data.currentPassword,row.password_hash)))return fail(res,403,'Current password is incorrect.');
-  const hash=await bcrypt.hash(p.data.newPassword,12); db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash,req.user!.id);
-  const currentToken=req.cookies?.relay_session; db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').run(req.user!.id,currentToken?sha(currentToken):'');
+  const hash=await bcrypt.hash(p.data.newPassword,12);
+  db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash,req.user!.id);
+  const currentToken=req.cookies?.relay_session;
+  const revoked=db.prepare('SELECT id FROM sessions WHERE user_id=? AND token_hash<>?').all(req.user!.id,currentToken?sha(currentToken):'') as any[];
+  db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').run(req.user!.id,currentToken?sha(currentToken):'');
+  revoked.forEach(session=>disconnectSessionSockets(session.id));
   res.json({ok:true});
 }));
 app.patch('/api/presence', requireAuth, (req: AuthedRequest,res) => {
@@ -210,7 +264,7 @@ app.get('/api/friends', requireAuth, (req: AuthedRequest,res) => {
 });
 app.post('/api/friends/request', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
   const parsed=z.object({username:z.string().min(3).max(24)}).safeParse(req.body); if(!parsed.success)return fail(res,400,'Enter a username.');
-  const target=db.prepare('SELECT id,username FROM users WHERE username=? COLLATE NOCASE').get(parsed.data.username) as any;
+  const target=db.prepare('SELECT id,username FROM users WHERE LOWER(username)=LOWER(?)').get(parsed.data.username) as any;
   if(!target)return fail(res,404,'No user has that username.'); if(target.id===req.user!.id)return fail(res,400,'You cannot add yourself.');
   if(blockedEither(req.user!.id,target.id))return fail(res,403,'A block prevents this request.');
   const existing=db.prepare('SELECT * FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)').get(req.user!.id,target.id,target.id,req.user!.id) as any;
@@ -241,8 +295,10 @@ app.get('/api/blocks', requireAuth, (req: AuthedRequest,res) => {
 app.post('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => {
   if(req.params.userId===req.user!.id)return fail(res,400,'You cannot block yourself.');
   if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(req.params.userId))return fail(res,404,'User not found.');
-  db.prepare('INSERT OR IGNORE INTO blocks(blocker_id,blocked_id) VALUES(?,?)').run(req.user!.id,req.params.userId);
+  db.prepare('INSERT INTO blocks(blocker_id,blocked_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.user!.id,req.params.userId);
   db.prepare('DELETE FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)').run(req.user!.id,req.params.userId,req.params.userId,req.user!.id);
+  disconnectUserSockets(req.user!.id);
+  disconnectUserSockets(req.params.userId);
   emitFriendUpdate(req.user!.id,req.params.userId);
   res.json({ok:true});
 });
@@ -260,7 +316,7 @@ function dmSummary(dmId: string,userId: string) {
   if(!row)return null;
   const peerIds=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(dmId,userId) as any[];
   if(peerIds.some(peer=>blockedEither(userId,peer.user_id)))return null;
-  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN datetime(u.last_seen)<datetime('now','-2 minutes') THEN 'offline' WHEN datetime(u.last_seen)<datetime('now','-60 seconds') AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
+  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
   return {...row,members};
 }
 app.get('/api/dms', requireAuth, (req: AuthedRequest,res) => {
@@ -299,12 +355,14 @@ app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: Authed
   if(blockedEither(req.user!.id,parsed.data.userId))return fail(res,403,'A block prevents adding this user.');
   if(target.dm_privacy==='nobody')return fail(res,403,'This user does not accept direct messages.');
   if(target.dm_privacy==='friends' && !db.prepare(`SELECT 1 FROM friendships WHERE status='accepted' AND ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))`).get(req.user!.id,parsed.data.userId,parsed.data.userId,req.user!.id))return fail(res,403,'You must be friends before adding this user.');
-  db.prepare('INSERT OR IGNORE INTO dm_members(dm_id,user_id) VALUES(?,?)').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
+  db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.delete('/api/dms/:dmId/members/:userId', requireAuth, (req: AuthedRequest,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
   const dm=db.prepare('SELECT created_by,is_group FROM dms WHERE id=?').get(req.params.dmId) as any; if(!dm)return fail(res,404,'Conversation not found.'); if(req.params.userId!==req.user!.id && (!dm.is_group || dm.created_by!==req.user!.id))return fail(res,403,'Only the group creator can remove another member.');
-  db.prepare('DELETE FROM dm_members WHERE dm_id=? AND user_id=?').run(req.params.dmId,req.params.userId); res.json({ok:true});
+  const removed=db.prepare('DELETE FROM dm_members WHERE dm_id=? AND user_id=?').run(req.params.dmId,req.params.userId);
+  if(removed.changes)disconnectUserSockets(req.params.userId);
+  res.json({ok:true});
 });
 
 // Servers, roles, channels, and moderation
@@ -336,7 +394,7 @@ app.post('/api/servers/:serverId/join', requireAuth, (req: AuthedRequest,res) =>
   if(!s)return fail(res,404,'Public server not found.');
   if(db.prepare('SELECT 1 FROM bans WHERE server_id=? AND user_id=?').get(s.id,req.user!.id))return fail(res,403,'You are banned from this server.');
   const role=db.prepare('SELECT id FROM roles WHERE server_id=? ORDER BY position ASC LIMIT 1').get(s.id) as any;
-  db.prepare('INSERT OR IGNORE INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?)').run(id(),s.id,req.user!.id,role?.id||null);
+  db.prepare('INSERT INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').run(id(),s.id,req.user!.id,role?.id||null);
   res.json({ok:true,serverId:s.id});
 });
 app.get('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
@@ -344,7 +402,7 @@ app.get('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
   if(!s)return fail(res,404,'Server not found.'); const m=membership(s.id,req.user!.id); if(!m)return fail(res,403,'You are not a member of this server.');
   const categories=db.prepare('SELECT * FROM categories WHERE server_id=? ORDER BY position').all(s.id);
   const channels=db.prepare('SELECT * FROM channels WHERE server_id=? ORDER BY position').all(s.id);
-  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN datetime(u.last_seen)<datetime('now','-2 minutes') THEN 'offline' WHEN u.presence='online' AND datetime(u.last_seen)<datetime('now','-60 seconds') THEN 'idle' ELSE u.presence END AS presence,CASE WHEN u.activity_visible=0 THEN '' ELSE u.status_text END AS status_text,r.name AS role_name,m.role_id,m.timeout_until FROM memberships m JOIN users u ON u.id=m.user_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.server_id=? ORDER BY u.username`).all(s.id);
+  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN u.presence='online' AND CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' THEN 'idle' ELSE u.presence END AS presence,CASE WHEN u.activity_visible=0 THEN '' ELSE u.status_text END AS status_text,r.name AS role_name,m.role_id,m.timeout_until FROM memberships m JOIN users u ON u.id=m.user_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.server_id=? ORDER BY u.username`).all(s.id);
   res.json({server:s,member:m,categories,channels,members});
 });
 app.patch('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
@@ -356,12 +414,17 @@ app.patch('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
 app.delete('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
   const s=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); if(s.owner_id!==req.user!.id)return fail(res,403,'Only the server owner can delete this server.');
-  db.prepare('DELETE FROM servers WHERE id=?').run(req.params.serverId); res.json({ok:true});
+  const members=db.prepare('SELECT user_id FROM memberships WHERE server_id=?').all(req.params.serverId) as any[];
+  db.prepare('DELETE FROM servers WHERE id=?').run(req.params.serverId);
+  members.forEach(member=>disconnectUserSockets(member.user_id));
+  res.json({ok:true});
 });
 app.post('/api/servers/:serverId/leave', requireAuth, (req: AuthedRequest,res) => {
   const s=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); if(s.owner_id===req.user!.id)return fail(res,400,'Transfer ownership before leaving as the owner.');
-  db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.user!.id); res.json({ok:true});
+  db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.user!.id);
+  disconnectUserSockets(req.user!.id);
+  res.json({ok:true});
 });
 app.post('/api/servers/:serverId/channels', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
@@ -381,7 +444,10 @@ app.patch('/api/channels/:channelId', requireAuth, (req: AuthedRequest,res) => {
 app.delete('/api/channels/:channelId', requireAuth, (req: AuthedRequest,res) => {
   const c=db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.channelId) as any; if(!c)return fail(res,404,'Channel not found.');
   if(!hasPermission(c.server_id,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
-  db.prepare('DELETE FROM channels WHERE id=?').run(c.id); res.json({ok:true});
+  db.prepare('DELETE FROM channels WHERE id=?').run(c.id);
+  io.in(`channel:${c.id}`).socketsLeave(`channel:${c.id}`);
+  io.in(`voice:${c.id}`).socketsLeave(`voice:${c.id}`);
+  res.json({ok:true});
 });
 app.post('/api/servers/:serverId/categories', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission.');
@@ -408,10 +474,28 @@ app.patch('/api/servers/:serverId/roles/:roleId', requireAuth, (req: AuthedReque
 app.patch('/api/servers/:serverId/members/:userId/role', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_roles'))return fail(res,403,'You do not have permission.');
   const p=z.object({roleId:z.string()}).safeParse(req.body); if(!p.success)return fail(res,400,'Choose a role.');
-  const role=db.prepare('SELECT * FROM roles WHERE id=? AND server_id=?').get(p.data.roleId,req.params.serverId) as any; if(!role)return fail(res,404,'Role not found.'); const ownerId=(db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any)?.owner_id; if(ownerId===req.params.userId)return fail(res,400,'The server owner role cannot be changed.'); const actor=membership(req.params.serverId,req.user!.id); const actorPerms=JSON.parse(actor?.permissions||'[]') as string[]; if(ownerId!==req.user!.id && (role.permissions && JSON.parse(role.permissions).some((x:string)=>!actorPerms.includes(x))))return fail(res,403,'You cannot assign a role with permissions you do not hold.'); if(ownerId!==req.user!.id && role.position>=(actor?.position||0))return fail(res,403,'You cannot assign an equal or higher role.');
-  const target=membership(req.params.serverId,req.params.userId); if(target?.permissions?.includes('manage_server') && !JSON.parse(role.permissions).includes('manage_server') && (db.prepare('SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE ?').get(req.params.serverId,'%manage_server%') as any).n<=1)return fail(res,400,'Keep at least one administrator.');
-  const result=db.prepare('UPDATE memberships SET role_id=? WHERE server_id=? AND user_id=?').run(p.data.roleId,req.params.serverId,req.params.userId); if(!result.changes)return fail(res,404,'Member not found.'); res.json({ok:true});
+  const role=db.prepare('SELECT * FROM roles WHERE id=? AND server_id=?').get(p.data.roleId,req.params.serverId) as any;
+  if(!role)return fail(res,404,'Role not found.');
+  const server=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
+  if(!server)return fail(res,404,'Server not found.');
+  const ownerId=server.owner_id;
+  if(ownerId===req.params.userId)return fail(res,400,'The server owner role cannot be changed.');
+  const actor=membership(req.params.serverId,req.user!.id);
+  const target=membership(req.params.serverId,req.params.userId);
+  if(!target)return fail(res,404,'Member not found.');
+  const actorPerms=JSON.parse(actor?.permissions||'[]') as string[];
+  const targetPerms=JSON.parse(target.permissions||'[]') as string[];
+  const assignedPerms=JSON.parse(role.permissions||'[]') as string[];
+  if(ownerId!==req.user!.id && assignedPerms.some((permission:string)=>!actorPerms.includes(permission)))return fail(res,403,'You cannot grant permissions you do not hold.');
+  if(ownerId!==req.user!.id && role.position>=(actor?.position??0))return fail(res,403,'You cannot assign an equal or higher role.');
+  if(ownerId!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot change the role of an equal or higher member.');
+  if(targetPerms.includes('manage_server') && !assignedPerms.includes('manage_server') && (db.prepare('SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE ?').get(req.params.serverId,'%manage_server%') as any).n<=1)return fail(res,400,'Keep at least one administrator.');
+  const result=db.prepare('UPDATE memberships SET role_id=? WHERE server_id=? AND user_id=?').run(p.data.roleId,req.params.serverId,req.params.userId);
+  if(!result.changes)return fail(res,404,'Member not found.');
+  disconnectUserSockets(req.params.userId);
+  res.json({ok:true});
 });
+
 app.delete('/api/servers/:serverId/members/:userId', requireAuth, (req: AuthedRequest,res) => {
   const action=req.query.action==='ban'?'ban':'kick'; const perm=action==='ban'?'ban_members':'kick_members';
   if(!hasPermission(req.params.serverId,req.user!.id,perm))return fail(res,403,`You do not have permission to ${action} members.`);
@@ -421,7 +505,7 @@ app.delete('/api/servers/:serverId/members/:userId', requireAuth, (req: AuthedRe
   const actor=membership(req.params.serverId,req.user!.id); const target=membership(req.params.serverId,req.params.userId); if(!target)return fail(res,404,'Member not found.');
   if(s.owner_id!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot remove an equal or higher role.');
   if((target.permissions||'').includes('manage_server')){const admins=(db.prepare(`SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE '%manage_server%'`).get(req.params.serverId) as any).n;if(admins<=1)return fail(res,400,'Keep at least one administrator in the server.');}
-  if(action==='ban')db.prepare('INSERT OR REPLACE INTO bans(server_id,user_id,moderator_id,reason) VALUES(?,?,?,?)').run(req.params.serverId,req.params.userId,req.user!.id,String(req.body?.reason||'').slice(0,200));
+  if(action==='ban')db.prepare('INSERT INTO bans(server_id,user_id,moderator_id,reason) VALUES(?,?,?,?) ON CONFLICT(server_id,user_id) DO UPDATE SET moderator_id=EXCLUDED.moderator_id,reason=EXCLUDED.reason').run(req.params.serverId,req.params.userId,req.user!.id,String(req.body?.reason||'').slice(0,200));
   db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId); res.json({ok:true,action});
 });
 app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
@@ -433,7 +517,16 @@ app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: Au
   const until=new Date(Date.now()+p.data.minutes*60000).toISOString(); const r=db.prepare('UPDATE memberships SET timeout_until=? WHERE server_id=? AND user_id=?').run(until,req.params.serverId,req.params.userId); if(!r.changes)return fail(res,404,'Member not found.'); res.json({ok:true,timeout_until:until});
 });
 app.delete('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
-  if(!hasPermission(req.params.serverId,req.user!.id,'timeout_members'))return fail(res,403,'You do not have permission.'); db.prepare('UPDATE memberships SET timeout_until=NULL WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId); res.json({ok:true});
+  if(!hasPermission(req.params.serverId,req.user!.id,'timeout_members'))return fail(res,403,'You do not have permission.');
+  const server=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
+  if(!server)return fail(res,404,'Server not found.');
+  const actor=membership(req.params.serverId,req.user!.id);
+  const target=membership(req.params.serverId,req.params.userId);
+  if(!target)return fail(res,404,'Member not found.');
+  if(server.owner_id===req.params.userId)return fail(res,400,'The server owner cannot be timed out.');
+  if(server.owner_id!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot change the timeout of an equal or higher role.');
+  db.prepare('UPDATE memberships SET timeout_until=NULL WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId);
+  res.json({ok:true});
 });
 app.get('/api/servers/:serverId/bans', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'ban_members'))return fail(res,403,'You do not have permission.');
@@ -474,7 +567,7 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 
 // Messages and search
 function messageRows(whereSql:string, params:any[], limit=60) {
-  return db.prepare(`SELECT m.*,u.username,u.avatar,(SELECT json_group_array(json_object('emoji',r.emoji,'user_id',r.user_id)) FROM reactions r WHERE r.message_id=m.id) reactions
+  return db.prepare(`SELECT m.*,u.username,u.avatar,(SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions
     FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC LIMIT ?`).all(...params,limit).reverse().map((m:any)=>({...m,reactions:JSON.parse(m.reactions||'[]'),attachments:db.prepare('SELECT id,filename,mime,size FROM attachments WHERE message_id=?').all(m.id)}));
 }
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
@@ -599,12 +692,40 @@ app.post('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) => {
 app.delete('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) => {db.prepare('DELETE FROM event_rsvps WHERE event_id=? AND user_id=?').run(req.params.eventId,req.user!.id);res.json({ok:true});});
 
 // staged_uploads is intentionally private and only finalized when an authenticated message sends it.
- db.exec(`CREATE TABLE IF NOT EXISTS staged_uploads(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,filename TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,storage_name TEXT NOT NULL UNIQUE,created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+ // staged_uploads is created by the versioned PostgreSQL migration in db.ts.
 const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','video/mp4']);
+function cleanupExpiredStagedUploads() {
+  const expired=db.prepare("SELECT id,storage_name FROM staged_uploads WHERE created_at::timestamptz<=NOW()+?::interval").all(`-${stagedUploadTtlHours} hours`) as any[];
+  if(!expired.length)return;
+  const remove=db.transaction((rows:any[])=>{
+    for(const row of rows){
+      const storageName=String(row.storage_name||'');
+      if(storageName && path.basename(storageName)===storageName)fs.rmSync(path.join(uploadDir,storageName),{force:true});
+      db.prepare('DELETE FROM staged_uploads WHERE id=?').run(row.id);
+    }
+  });
+  remove(expired);
+}
+function userStoredUploadBytes(userId:string) {
+  const staged=db.prepare('SELECT COALESCE(SUM(size),0) AS bytes FROM staged_uploads WHERE user_id=?').get(userId) as any;
+  const attached=db.prepare('SELECT COALESCE(SUM(a.size),0) AS bytes FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.sender_id=?').get(userId) as any;
+  return Number(staged?.bytes||0)+Number(attached?.bytes||0);
+}
+cleanupExpiredStagedUploads();
+const stagedUploadCleanupTimer=setInterval(()=>{try{cleanupExpiredStagedUploads();}catch(error){console.error('Staged upload cleanup failed.',error);}},60*60*1000);
+stagedUploadCleanupTimer.unref();
 const storage=multer.diskStorage({destination:(_req,_file,cb)=>cb(null,uploadDir),filename:(_req,_file,cb)=>cb(null,crypto.randomBytes(18).toString('hex'))});
 const upload=multer({storage,limits:{fileSize:maxUpload,files:8},fileFilter:(_req,file,cb)=>{const ext=path.extname(file.originalname).toLowerCase();const ok=allowedMime.has(file.mimetype)&&!['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1'].includes(ext);const finish=cb as ((error: Error)=>void)&((error: null,acceptFile: boolean)=>void);if(ok) finish(null,true); else finish(new Error('This file type is not allowed.'));}});
 app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8), (req: AuthedRequest,res) => {
-  const files=(req.files||[]) as Express.Multer.File[]; const saved=files.map(f=>{const uid=id();db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)').run(uid,req.user!.id,path.basename(f.originalname).slice(0,180),f.mimetype,f.size,f.filename);return {id:uid,filename:path.basename(f.originalname),mime:f.mimetype,size:f.size,url:`/api/uploads/${uid}`};}); res.status(201).json({uploads:saved,limitBytes:maxUpload});
+  const files=(req.files||[]) as Express.Multer.File[];
+  cleanupExpiredStagedUploads();
+  const incomingBytes=files.reduce((total,file)=>total+file.size,0);
+  if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes){
+    files.forEach(file=>fs.rmSync(file.path,{force:true}));
+    return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
+  }
+  const saved=files.map(f=>{const uid=id();db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)').run(uid,req.user!.id,path.basename(f.originalname).slice(0,180),f.mimetype,f.size,f.filename);return {id:uid,filename:path.basename(f.originalname),mime:f.mimetype,size:f.size,url:`/api/uploads/${uid}`};});
+  res.status(201).json({uploads:saved,limitBytes:maxUpload,storageLimitBytes:maxUserStorageBytes});
 });
 app.get('/api/uploads/:uploadId', requireAuth, (req: AuthedRequest,res) => {
   const row=db.prepare(`SELECT a.filename,a.mime,a.storage_name,m.sender_id,m.channel_id,m.dm_id,s.user_id AS staged_owner,c.server_id
@@ -621,20 +742,43 @@ app.post('/api/presence/heartbeat', requireAuth, (req: AuthedRequest,res) => {db
 function socketUser(cookieHeader='') {
   const match=cookieHeader.match(/(?:^|;\s*)relay_session=([^;]+)/); if(!match)return null;
   let token='';try{token=decodeURIComponent(match[1]);}catch{return null;}
-  const row=db.prepare(`SELECT u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`).get(sha(token),now()) as any; return row||null;
+  const row=db.prepare(`SELECT s.id AS session_id,s.expires_at,u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`).get(sha(token),now()) as any; return row||null;
 }
-io.use((socket,next)=>{const user=socketUser(socket.handshake.headers.cookie||'');if(!user)return next(new Error('Unauthorized'));(socket.data as any).user=user;next();});
+io.use((socket,next)=>{
+  const session=socketUser(socket.handshake.headers.cookie||'');
+  if(!session)return next(new Error('Unauthorized'));
+  (socket.data as any).user=session;
+  next();
+});
 io.on('connection',(socket)=>{
-  const user=(socket.data as any).user; socket.join(`user:${user.id}`);
+  const user=(socket.data as any).user;
+  socket.join(`user:${user.id}`);
+  socket.join(`session:${user.session_id}`);
+  const expiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
+  expiryTimer.unref();
+  socket.use((_packet,next)=>{
+    const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
+    if(!active){socket.disconnect(true);return;}
+    next();
+  });
   socket.on('room:join-channel',(channelId:string,ack?:Function)=>{if(typeof channelId!=='string'||!canReadChannel(channelId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`channel:${channelId}`);ack?.({ok:true});});
   socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
   socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
   socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
   socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{const channel=db.prepare('SELECT type FROM channels WHERE id=?').get(data?.channelId) as any;if(channel?.type!=='voice'||!canReadChannel(data?.channelId,user.id)){ack?.({ok:false,error:'Not authorized for this voice channel'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,...s.data.user}:null;}).filter(Boolean)});});
-  socket.on('voice:leave',(channelId:string)=>{socket.leave(`voice:${channelId}`);socket.to(`voice:${channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});});
+  socket.on('voice:leave',(channelId:string)=>{
+    if(typeof channelId!=='string')return;
+    const room=`voice:${channelId}`;
+    if(!socket.rooms.has(room))return;
+    socket.leave(room);
+    socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
+  });
   socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{if(socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,...data});});
   socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:user,payload:data.payload,channelId:data.channelId});}});
-  socket.on('disconnect',()=>{for(const room of socket.rooms){if(room.startsWith('voice:'))socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});}});
+  socket.on('disconnect',()=>{
+    clearTimeout(expiryTimer);
+    for(const room of socket.rooms){if(room.startsWith('voice:'))socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});}
+  });
 });
 
 // Static hosting for the production build.

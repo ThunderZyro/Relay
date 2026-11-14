@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -21,6 +21,7 @@ let apiProcess = null;
 let isQuitting = false;
 let logFile = null;
 let localOrigin = null;
+let updateCheckPromise = null;
 
 function writeLog(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
@@ -73,7 +74,7 @@ function createWindow() {
     minHeight: 620,
     show: false,
     backgroundColor: '#17191c',
-    autoHideMenuBar: true,
+    autoHideMenuBar: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -164,6 +165,107 @@ async function startLocalServer() {
   writeLog('Relay local API is ready.');
 }
 
+async function checkForDesktopUpdates(manual = false) {
+  if (!app.isPackaged) {
+    if (manual) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Updates unavailable',
+        message: 'Automatic updates are available in the installed Relay desktop app.'
+      });
+    }
+    return;
+  }
+
+  if (updateCheckPromise) {
+    if (manual) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Checking for updates',
+        message: 'Relay is already checking for updates. Please wait for the result.'
+      });
+    }
+    return updateCheckPromise;
+  }
+
+  const check = (async () => {
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      if (!manual || !result) return;
+
+      if (result.isUpdateAvailable) {
+        const version = result.updateInfo?.version || 'a newer version';
+        await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: 'Update found',
+          message: `Relay ${version} is available and is downloading in the background. You’ll be prompted to restart when it is ready.`,
+          buttons: ['OK']
+        });
+      } else {
+        await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: 'Relay is up to date',
+          message: `You’re running Relay ${app.getVersion()}, the latest available version.`,
+          buttons: ['OK']
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeLog(`Update check failed: ${message}`);
+      if (manual) {
+        await dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          title: 'Could not check for updates',
+          message: `Relay could not check GitHub Releases. Check your internet connection and try again.\n\nDetails: ${message}`,
+          buttons: ['OK']
+        });
+      }
+    }
+  })();
+
+  updateCheckPromise = check;
+  try {
+    await check;
+  } finally {
+    if (updateCheckPromise === check) updateCheckPromise = null;
+  }
+}
+
+function configureApplicationMenu() {
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Relay',
+      submenu: [
+        {
+          label: 'About Relay',
+          click: () => dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: 'About Relay',
+            message: `Relay ${app.getVersion()}`,
+            detail: 'Relay Desktop'
+          })
+        },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Check for Updates…',
+          click: () => checkForDesktopUpdates(true)
+        },
+        {
+          label: 'Open GitHub Releases',
+          click: () => shell.openExternal('https://github.com/ThunderZyro/Relay/releases/latest')
+        }
+      ]
+    }
+  ]);
+  Menu.setApplicationMenu(menu);
+}
+
 function configureAutoUpdates() {
   if (!app.isPackaged) return;
   autoUpdater.autoDownload = true;
@@ -175,6 +277,10 @@ function configureAutoUpdates() {
   autoUpdater.on('error', error => writeLog(`Updater: ${error.message}`));
   autoUpdater.on('update-downloaded', async info => {
     writeLog(`Desktop update downloaded: ${info.version}`);
+    if (!mainWindow) {
+      autoUpdater.quitAndInstall();
+      return;
+    }
     const answer = await dialog.showMessageBox(mainWindow, {
       type: 'info',
       title: 'Relay update ready',
@@ -185,7 +291,7 @@ function configureAutoUpdates() {
     });
     if (answer.response === 0) autoUpdater.quitAndInstall();
   });
-  setTimeout(() => autoUpdater.checkForUpdates().catch(error => writeLog(`Update check failed: ${error.message}`)), 10000);
+  setTimeout(() => { void checkForDesktopUpdates(false); }, 10000);
 }
 
 app.on('second-instance', () => {
@@ -197,6 +303,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   try {
+    configureApplicationMenu();
     await startLocalServer();
     await createWindow();
     configureAutoUpdates();

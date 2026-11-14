@@ -1,0 +1,44 @@
+name: Relay PostgreSQL integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - frontend-redesign
+      - fix/neon-postgres-storage
+
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://relay:relay@localhost:5432/relay
+      RELAY_RUN_DB_TESTS: 'true'
+    steps:
+      - name: Check out Relay
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Test PostgreSQL-backed API
+        run: npm test --workspace=server
+      - name: Build client and server
+        run: npm run build

@@ -43,23 +43,23 @@ The build must run on Windows because it copies that machine's Windows Node runt
 
 ## Automatic desktop updates
 
-The app uses `electron-updater` with the GitHub Releases provider and the NSIS installer target. It checks shortly after startup, downloads a newer release in the background, and prompts the user to restart to apply it. NSIS differential packages are enabled to reduce update downloads when the changed files allow it.
+The app uses `electron-updater` with the GitHub Releases provider and the NSIS installer target. It checks shortly after startup, downloads a newer release in the background, and prompts the user to restart to apply it. You can also open **Help → Check for Updates…** at any time, or choose **Help → Open GitHub Releases** to view published versions. NSIS differential packages are enabled to reduce update downloads when the changed files allow it. The updater is configured for `ThunderZyro/Relay`.
 
 ### First release (recommended cloud build)
 
 1. Upload the complete project contents to a **public** GitHub repository, including `.github/workflows/release-desktop.yml`.
 2. In the GitHub repository, open **Settings → Actions → General → Workflow permissions** and allow read/write access to repository contents.
-3. Open **Actions → Build Relay Desktop → Run workflow** and run it on the default branch. The current root `package.json` version (`1.0.0`) is used for the release.
+3. Open **Actions → Build Relay Desktop → Run workflow** and run it on the default branch. The current root `package.json` version (`1.0.1`) is used for the release.
 4. Wait for the workflow to finish. The workflow runs the build on a GitHub-hosted Windows machine and publishes `Relay-Setup-<version>.exe`, `latest.yml`, and the blockmap asset to GitHub Releases.
-5. Download the installer from the release assets.
+5. Download the installer from the release assets and install it once. This first install puts the correct GitHub Releases feed into the app; older installs built with the previous placeholder publisher settings must be updated manually with this installer before automatic updates can work.
 
 The workflow uses GitHub's built-in `GITHUB_TOKEN`; no personal access token needs to be created, copied, or committed. The repository must be public because installed apps need to download release assets without embedding a private token.
 
 ### Publish later updates
 
-1. Change the root `package.json` version (for example, from `1.0.0` to `1.0.1`).
+1. Change the root `package.json` version for each release (for example, from `1.0.1` to `1.0.2`).
 2. Commit and push the changed source to GitHub.
-3. Run **Actions → Build Relay Desktop → Run workflow** again, or push a matching version tag such as `v1.0.1`.
+3. Run **Actions → Build Relay Desktop → Run workflow** again, or push a matching version tag such as `v1.0.2`.
 4. Confirm the new GitHub Release contains the installer, `latest.yml`, and blockmap. Existing installations check for the new release automatically.
 
 You can also publish locally using `PUBLISH RELAY UPDATE.bat`, but that requires the optional local build toolchain and a release-write token. GitHub Actions is the recommended route because its build downloads happen on GitHub, not over your home internet connection. Never put a GitHub token in source code, `.env`, or a committed file.

@@ -698,8 +698,15 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 
 // Messages and search
 function messageRows(whereSql:string, params:any[], limit=60) {
-  return db.prepare(`SELECT m.*,u.username,u.avatar,(SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions
-    FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC LIMIT ?`).all(...params,limit).reverse().map((m:any)=>({...m,reactions:JSON.parse(m.reactions||'[]'),attachments:db.prepare('SELECT id,filename,mime,size FROM attachments WHERE message_id=?').all(m.id)}));
+  return db.prepare(`SELECT m.*,u.username,u.avatar,
+    (SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions,
+    (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments
+    FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC LIMIT ?`)
+    .all(...params,limit).reverse().map((m:any)=>({
+      ...m,
+      reactions:JSON.parse(m.reactions||'[]'),
+      attachments:JSON.parse(m.attachments||'[]')
+    }));
 }
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
   if(!canReadChannel(req.params.channelId,req.user!.id))return fail(res,403,'Channel membership required.');
@@ -920,7 +927,7 @@ io.on('connection',(socket)=>{
   socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
   socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
   socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
-  socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,...s.data.user}:null;}).filter(Boolean)});});
+  socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,userId:s.data.user?.id,username:s.data.user?.username}:null;}).filter(Boolean)});});
   socket.on('voice:leave',(channelId:string)=>{
     if(typeof channelId!=='string')return;
     const room=`voice:${channelId}`;
@@ -929,7 +936,7 @@ io.on('connection',(socket)=>{
     socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
   });
   socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,...data});});
-  socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:user,payload:data.payload,channelId:data.channelId});}});
+  socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:{id:user.id,username:user.username},payload:data.payload,channelId:data.channelId});}});
   socket.on('disconnect',()=>{
     clearTimeout(sessionExpiryTimer);
     if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);

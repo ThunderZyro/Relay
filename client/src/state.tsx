@@ -1,5 +1,5 @@
 import React,{createContext,useCallback,useContext,useEffect,useState} from 'react';
-import {api} from './api';
+import {api,ApiError} from './api';
 import type {PublicUser} from '../../shared/types';
 export type User=PublicUser;
 type AuthValue={user:User|null;loading:boolean;refresh:()=>Promise<void>;setUser:(u:User|null)=>void};
@@ -14,7 +14,7 @@ export function announceAuthChange(){
 
 export function AuthProvider({children}:{children:React.ReactNode}){
  const [user,setUser]=useState<User|null>(null);const [loading,setLoading]=useState(true);
- const refresh=useCallback(async()=>{try{const r=await api<{user:User}>('/auth/me');setUser(r.user);}catch{setUser(null);}finally{setLoading(false);}},[]);
+ const refresh=useCallback(async()=>{try{const r=await api<{user:User}>('/auth/me');setUser(r.user);}catch(error){if(error instanceof ApiError&&error.status===401)setUser(null);}finally{setLoading(false);}},[]);
  useEffect(()=>{
   void refresh();
   const refreshWhenActive=()=>{if(document.visibilityState==='visible')void refresh();};

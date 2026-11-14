@@ -6,8 +6,9 @@ import { nanoid } from 'nanoid';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env') });
-const databaseUrl = process.env.VERCEL_ENV === 'preview' ? (process.env.DATABASE_URL_PREVIEW || process.env.DATABASE_URL) : process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error('DATABASE_URL is required. Configure the Relay PostgreSQL connection before starting the API.');
+const configuredDatabaseUrl = process.env.VERCEL_ENV === 'preview' ? (process.env.DATABASE_URL_PREVIEW || process.env.DATABASE_URL) : process.env.DATABASE_URL;
+if (!configuredDatabaseUrl) throw new Error('DATABASE_URL is required. Configure the Relay PostgreSQL connection before starting the API.');
+export const databaseUrl: string = configuredDatabaseUrl;
 
 const isTypeScript = import.meta.url.endsWith('.ts');
 const worker = new Worker(new URL(isTypeScript ? './db-worker.ts' : './db-worker.js', import.meta.url), {
@@ -105,7 +106,9 @@ const migrations = [
   { version: 1, name: 'initial schema', file: '001_initial.sql' },
   { version: 2, name: 'membership timeout', file: '002_membership_timeout.sql' },
   { version: 3, name: 'staged uploads', file: '003_staged_uploads.sql' },
-  { version: 4, name: 'password reset tokens', file: '004_password_reset_tokens.sql' }
+  { version: 4, name: 'password reset tokens', file: '004_password_reset_tokens.sql' },
+  { version: 5, name: 'attachment and message query indexes', file: '005_attachment_query_indexes.sql' },
+  { version: 6, name: 'distributed Socket.IO attachments', file: '006_socket_io_adapter.sql' }
 ];
 const applyMigrations = db.transaction(() => {
   db.prepare('SELECT pg_advisory_xact_lock(71324001)').get();

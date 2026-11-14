@@ -1,12 +1,8 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { spawn } = require('node:child_process');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
-const http = require('node:http');
-const net = require('node:net');
 const path = require('node:path');
 
 app.setName('Relay');
@@ -17,53 +13,47 @@ const hasSingleInstance = app.requestSingleInstanceLock();
 if (!hasSingleInstance) app.quit();
 
 let mainWindow = null;
-let apiProcess = null;
 let isQuitting = false;
 let logFile = null;
-let localOrigin = null;
 let updateCheckPromise = null;
+
+const defaultAppUrl = 'https://relay-platform-zyro-d26e.vercel.app';
+const configuredAppUrl = process.env.RELAY_APP_URL || defaultAppUrl;
+let appUrl;
+let appOrigin;
+let configurationError = null;
+
+try {
+  appUrl = new URL(configuredAppUrl);
+  const localDevelopment = !app.isPackaged && ['localhost', '127.0.0.1'].includes(appUrl.hostname);
+  if (appUrl.protocol !== 'https:' && !(localDevelopment && appUrl.protocol === 'http:')) {
+    throw new Error('Relay Desktop only accepts HTTPS URLs outside local development.');
+  }
+  appOrigin = appUrl.origin;
+} catch (error) {
+  appUrl = new URL(defaultAppUrl);
+  appOrigin = appUrl.origin;
+  configurationError = error instanceof Error ? error.message : String(error);
+}
 
 function writeLog(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
-  try { if (logFile) fs.appendFileSync(logFile, line); } catch { /* logging must not stop the app */ }
+  try { if (logFile) fs.appendFileSync(logFile, line); } catch { /* logging must not stop Relay */ }
 }
 
 function showFatal(title, message) {
   writeLog(`${title}: ${message}`);
-  dialog.showMessageBox({ type: 'error', title, message, buttons: ['Close'] }).finally(() => app.quit());
+  dialog.showMessageBox({ type: 'error', title, message, buttons: ['Close'] })
+    .finally(() => app.quit());
 }
 
-function reservePort() {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      probe.close(error => error ? reject(error) : resolve(port));
-    });
-  });
-}
-
-function waitForApi(url, child, timeoutMs = 30000) {
-  const started = Date.now();
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      if (child.exitCode !== null) return reject(new Error(`Relay's local server exited with code ${child.exitCode}. See relay.log in the Relay data folder.`));
-      const request = http.get(`${url}/api/health`, response => {
-        response.resume();
-        if (response.statusCode === 200) return resolve();
-        retry();
-      });
-      request.setTimeout(1200, () => request.destroy());
-      request.on('error', retry);
-      function retry() {
-        if (Date.now() - started > timeoutMs) return reject(new Error('Relay local server did not become ready within 30 seconds. See relay.log in the Relay data folder.'));
-        setTimeout(attempt, 350);
-      }
-    };
-    attempt();
-  });
+function openExternal(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:') void shell.openExternal(parsed.toString());
+  } catch {
+    writeLog(`Blocked invalid external URL: ${String(url)}`);
+  }
 }
 
 function createWindow() {
@@ -73,7 +63,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 620,
     show: false,
-    backgroundColor: '#17191c',
+    backgroundColor: '#171d21',
     autoHideMenuBar: false,
     webPreferences: {
       contextIsolation: true,
@@ -83,86 +73,31 @@ function createWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) shell.openExternal(url);
+    openExternal(url);
     return { action: 'deny' };
   });
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (localOrigin && !url.startsWith(localOrigin)) {
+
+  mainWindow.webContents.on('will-navigate', (event, target) => {
+    try {
+      const parsed = new URL(target);
+      if (parsed.origin !== appOrigin) {
+        event.preventDefault();
+        openExternal(target);
+      }
+    } catch {
       event.preventDefault();
-      if (url.startsWith('https://')) shell.openExternal(url);
     }
   });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    writeLog(`Relay window renderer stopped: ${details.reason} (exit code ${details.exitCode}).`);
+  });
+
   mainWindow.once('ready-to-show', () => mainWindow && mainWindow.show());
   mainWindow.on('closed', () => { mainWindow = null; });
-  return mainWindow.loadURL(localOrigin);
-}
 
-async function startLocalServer() {
-  const relayRoot = path.join(process.resourcesPath, 'relay');
-  const runtime = path.join(process.resourcesPath, 'runtime', 'node.exe');
-  const serverEntry = path.join(relayRoot, 'server', 'dist', 'index.js');
-  const clientIndex = path.join(relayRoot, 'client', 'dist', 'index.html');
-  const modules = path.join(relayRoot, 'node_modules');
-
-  for (const required of [runtime, serverEntry, clientIndex, modules]) {
-    if (!fs.existsSync(required)) throw new Error(`The installer is missing a required Relay component: ${required}`);
-  }
-
-  const dataRoot = app.getPath('userData');
-  const dataDir = path.join(dataRoot, 'data');
-  const uploadDir = path.join(dataRoot, 'uploads');
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.mkdirSync(uploadDir, { recursive: true });
-  logFile = path.join(dataRoot, 'relay.log');
-
-  const secretPath = path.join(dataRoot, 'session-secret');
-  let sessionSecret;
-  if (fs.existsSync(secretPath)) sessionSecret = fs.readFileSync(secretPath, 'utf8').trim();
-  else {
-    sessionSecret = crypto.randomBytes(48).toString('hex');
-    fs.writeFileSync(secretPath, sessionSecret, { encoding: 'utf8', mode: 0o600 });
-  }
-
-  const port = await reservePort();
-  localOrigin = `http://127.0.0.1:${port}`;
-  const env = {
-    ...process.env,
-    NODE_ENV: 'production',
-    HOST: '127.0.0.1',
-    PORT: String(port),
-    CLIENT_ORIGIN: localOrigin,
-    COOKIE_SECURE: 'false',
-    COOKIE_SAME_SITE: 'lax',
-    SESSION_SECRET: sessionSecret,
-    DATABASE_FILE: path.join(dataDir, 'relay.sqlite'),
-    UPLOAD_DIR: uploadDir,
-    MAX_UPLOAD_MB: '10'
-  };
-
-  writeLog(`Starting local Relay API at ${localOrigin}`);
-  apiProcess = spawn(runtime, [serverEntry], {
-    cwd: relayRoot,
-    env,
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  apiProcess.stdout.on('data', data => writeLog(String(data).trimEnd()));
-  apiProcess.stderr.on('data', data => writeLog(`SERVER ERROR: ${String(data).trimEnd()}`));
-  apiProcess.on('error', error => writeLog(`Could not launch local server: ${error.message}`));
-  apiProcess.on('exit', (code, signal) => {
-    writeLog(`Local server exited (code=${code}, signal=${signal})`);
-    if (!isQuitting && mainWindow) {
-      dialog.showMessageBox(mainWindow, {
-        type: 'error',
-        title: 'Relay stopped',
-        message: 'Relay’s local service stopped unexpectedly. Restart Relay to try again.',
-        buttons: ['Close']
-      }).finally(() => app.quit());
-    }
-  });
-
-  await waitForApi(localOrigin, apiProcess);
-  writeLog('Relay local API is ready.');
+  writeLog(`Opening shared Relay service: ${appOrigin}`);
+  return mainWindow.loadURL(appUrl.toString());
 }
 
 async function checkForDesktopUpdates(manual = false) {
@@ -182,7 +117,7 @@ async function checkForDesktopUpdates(manual = false) {
       await dialog.showMessageBox(mainWindow, {
         type: 'info',
         title: 'Checking for updates',
-        message: 'Relay is already checking for updates. Please wait for the result.'
+        message: 'Relay is already checking for updates.'
       });
     }
     return updateCheckPromise;
@@ -232,7 +167,7 @@ async function checkForDesktopUpdates(manual = false) {
 }
 
 function configureApplicationMenu() {
-  const menu = Menu.buildFromTemplate([
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: 'Relay',
       submenu: [
@@ -242,7 +177,7 @@ function configureApplicationMenu() {
             type: 'info',
             title: 'About Relay',
             message: `Relay ${app.getVersion()}`,
-            detail: 'Relay Desktop'
+            detail: 'Relay Desktop · Shared online workspace'
           })
         },
         { type: 'separator' },
@@ -252,18 +187,24 @@ function configureApplicationMenu() {
     {
       label: 'Help',
       submenu: [
-        {
-          label: 'Check for Updates…',
-          click: () => checkForDesktopUpdates(true)
-        },
-        {
-          label: 'Open GitHub Releases',
-          click: () => shell.openExternal('https://github.com/ThunderZyro/Relay/releases/latest')
-        }
+        { label: 'Check for Updates…', click: () => void checkForDesktopUpdates(true) },
+        { label: 'Open Relay in Browser', click: () => openExternal(appUrl.toString()) },
+        { label: 'Open GitHub Releases', click: () => openExternal('https://github.com/ThunderZyro/Relay/releases/latest') }
       ]
     }
-  ]);
-  Menu.setApplicationMenu(menu);
+  ]));
+}
+
+function configurePermissions() {
+  const allowedPermissions = new Set(['media','notifications']);
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    let trustedOrigin = false;
+    try { trustedOrigin = new URL(details.requestingUrl).origin === appOrigin; } catch {}
+    callback(trustedOrigin && allowedPermissions.has(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    return requestingOrigin === appOrigin && allowedPermissions.has(permission);
+  });
 }
 
 function configureAutoUpdates() {
@@ -291,7 +232,7 @@ function configureAutoUpdates() {
     });
     if (answer.response === 0) autoUpdater.quitAndInstall();
   });
-  setTimeout(() => { void checkForDesktopUpdates(false); }, 10000);
+  setTimeout(() => { void checkForDesktopUpdates(false); }, 10000).unref();
 }
 
 app.on('second-instance', () => {
@@ -303,8 +244,11 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   try {
+    if(configurationError)throw new Error(configurationError);
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    logFile = path.join(app.getPath('userData'), 'relay-desktop.log');
     configureApplicationMenu();
-    await startLocalServer();
+    configurePermissions();
     await createWindow();
     configureAutoUpdates();
   } catch (error) {
@@ -312,9 +256,15 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('before-quit', () => {
-  isQuitting = true;
-  if (apiProcess && !apiProcess.killed) apiProcess.kill();
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) void createWindow();
 });
 
-app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => {
+  isQuitting = true;
+  writeLog('Relay Desktop is closing.');
+});
+
+app.on('window-all-closed', () => {
+  if (!isQuitting) app.quit();
+});

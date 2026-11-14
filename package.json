@@ -17,9 +17,8 @@
     "start": "npm run start --workspace=server",
     "test": "npm test --workspace=server",
     "db:seed": "npm run seed --workspace=server",
-    "desktop:prepare": "node scripts/prepare-desktop.mjs",
-    "desktop:build:win": "npm run build && npm run desktop:prepare && electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never",
-    "desktop:publish": "npm run build && npm run desktop:prepare && electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish always"
+    "desktop:build:win": "npm run build && electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never",
+    "desktop:publish": "npm run build && electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish always"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

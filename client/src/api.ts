@@ -2,6 +2,13 @@ const configuredBase = (import.meta.env.VITE_API_URL as string | undefined)?.tri
 export const apiBase = (configuredBase || '/api').replace(/\/$/, '');
 export const apiOrigin = apiBase.startsWith('http') ? apiBase.replace(/\/api$/, '') : window.location.origin;
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 type RequestOptions = { method?: string; body?: unknown; headers?: HeadersInit };
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const url = `${apiBase}${path.startsWith('/') ? path : `/${path}`}`;
@@ -19,10 +26,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   try {
     response = await fetch(url, { method, credentials: 'include', headers, body });
   } catch {
-    throw new Error('Relay could not reach the server. Check the API URL and whether the server is running.');
+    throw new ApiError('Relay could not reach the server. Check the API URL and whether the server is running.', 0);
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data?.error === 'string' ? data.error : `Request failed (${response.status}).`);
+  if (!response.ok) throw new ApiError(typeof data?.error === 'string' ? data.error : `Request failed (${response.status}).`, response.status);
   return data as T;
 }
 export const api = <T = any>(path: string) => request<T>(path);

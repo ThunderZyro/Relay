@@ -1,92 +1,53 @@
-# Relay Desktop for Windows
+# Relay Desktop
 
-Relay Desktop is an Electron desktop shell around the existing Relay web client and Express/Socket.IO server. The installer contains the website build, the local API, SQLite runtime dependencies, and a private copy of Node.js. **People installing Relay do not need Node.js, npm, a terminal, or a separate browser.**
+Relay Desktop is an installable Windows application for the same shared Relay service used by the website.
 
-The app starts its API on a random loopback-only port (`127.0.0.1`), opens a desktop window to that local service, and stops the API when the app exits. It does not expose the local API to the LAN. SQLite data, the session secret, logs, and uploaded files live in `%APPDATA%\Relay` and are not overwritten by app upgrades.
+## One shared Relay
 
+The desktop app opens the hosted Relay website inside a secure Electron window. It does **not** run its own API or database. This means:
 
-## Build on GitHub Actions (no local npm setup required)
+- Sign in with the same account as the website.
+- Messages, friends, group chats, servers, and uploads are shared.
+- A person using Relay Desktop can talk to someone using Relay in a browser.
+- An internet connection is required.
 
-You do not need to install the desktop builder or run `npm install` on your own PC to produce the Windows installer. This repository includes `.github/workflows/release-desktop.yml`, which builds the installer on a GitHub-hosted Windows machine.
+The default service address is:
 
-1. Upload the **contents** of this project folder to a GitHub repository (keep the `.github` folder).
-2. Make sure the repository is public so the app's built-in GitHub updater can read published releases.
-3. In GitHub, choose **Releases → Draft a new release**, create tag `v1.0.0`, and publish it.
-4. Open the repository's **Actions** tab. The `Build Relay Desktop` workflow will install dependencies on GitHub's Windows runner, run the client/server build and tests, package the local Node runtime, and publish `Relay-Setup-1.0.0.exe` plus update metadata to that release.
-5. Download the installer from the GitHub release assets. Your users do not need Node.js or npm.
+`https://relay-platform-zyro-d26e.vercel.app`
 
-The build happens on GitHub's servers, so the large Electron/build dependency downloads do not use your home internet data. You only download the finished installer. Future releases are built the same way using the next version number and tag. Do not upload `.env`, `node_modules`, database files, or GitHub tokens.
+The URL can be changed for a development build with the `RELAY_APP_URL` environment variable. Packaged releases use HTTPS URLs.
 
-The workflow uses GitHub's automatically provided `GITHUB_TOKEN`; no personal access token needs to be committed or pasted into project files. The repository Actions permission must allow workflow write access to contents/releases.
+## Build a Windows installer
 
-## What is required, and by whom?
+You need Windows 10/11 x64, Node.js 22 or newer, and npm 10 or newer.
 
-| Person | Requirements |
-|---|---|
-| You, using the recommended GitHub cloud build | A GitHub repository and browser; no local Node.js/npm setup required |
-| You, choosing an optional local build | Windows 10/11 x64, Node.js 22+, npm 10+, internet for one-time build dependencies |
-| Someone installing RelaySetup.exe | Windows 10/11 x64 only; no Node.js and no npm |
-| Publishing automatic updates | A public GitHub repository for desktop releases |
+1. Run `Install Dependencies.bat` once (or run `npm install`).
+2. Run `npm run build`.
+3. Run `BUILD RELAY DESKTOP.bat`, or use:
 
-### Optional local build
+   ```bash
+   npm run desktop:build:win
+   ```
 
-The `SETUP DESKTOP BUILDER.bat` script now asks before downloading anything. Choose **N** to use GitHub Actions instead. Choose **Y** only when you deliberately want to install the local Electron/packaging toolchain. The installer users will never run npm.
+4. The installer is created in `release/desktop`.
 
-## Optional local Windows build
+The installer only contains the Electron shell and its updater. It does not bundle a second Relay server, local database, or a private Node runtime. People installing it do not need Node.js or npm.
 
-1. Extract the project to a normal local folder.
-2. Double-click `SETUP DESKTOP BUILDER.bat` and choose **Y** only if you want local builder dependencies.
-3. Double-click `BUILD RELAY DESKTOP.bat`.
-4. Find `Relay-Setup-<version>.exe` in `release\desktop`.
+## GitHub Actions build
 
-The build must run on Windows because it copies that machine's Windows Node runtime and Windows-native `better-sqlite3` binary into the installer. The packaging stage copies only production dependency folders into the runtime staging area. It does not install dependencies when the installed app launches.
+The `Build Relay Desktop` workflow builds on a GitHub-hosted Windows runner. It can be run manually from the Actions tab or triggered by a version tag such as `v1.0.2`. The workflow tests and builds Relay before creating the installer. It publishes the installer, `latest.yml`, and blockmap to the matching GitHub Release.
 
-## Automatic desktop updates
+For each new desktop release:
 
-The app uses `electron-updater` with the GitHub Releases provider and the NSIS installer target. It checks shortly after startup, downloads a newer release in the background, and prompts the user to restart to apply it. You can also open **Help → Check for Updates…** at any time, or choose **Help → Open GitHub Releases** to view published versions. NSIS differential packages are enabled to reduce update downloads when the changed files allow it. The updater is configured for `ThunderZyro/Relay`.
+1. Increase the root `package.json` version.
+2. Push the reviewed code.
+3. Run the workflow manually or push a matching `v<version>` tag.
+4. Check the GitHub Release contains the setup executable and update metadata.
 
-### First release (recommended cloud build)
+The app uses GitHub Releases for automatic updates. Windows may show a SmartScreen warning until Relay has a trusted code-signing certificate.
 
-1. Upload the complete project contents to a **public** GitHub repository, including `.github/workflows/release-desktop.yml`.
-2. In the GitHub repository, open **Settings → Actions → General → Workflow permissions** and allow read/write access to repository contents.
-3. Open **Actions → Build Relay Desktop → Run workflow** and run it on the default branch. The current root `package.json` version (`1.0.1`) is used for the release.
-4. Wait for the workflow to finish. The workflow runs the build on a GitHub-hosted Windows machine and publishes `Relay-Setup-<version>.exe`, `latest.yml`, and the blockmap asset to GitHub Releases.
-5. Download the installer from the release assets and install it once. This first install puts the correct GitHub Releases feed into the app; older installs built with the previous placeholder publisher settings must be updated manually with this installer before automatic updates can work.
+## App permissions and data
 
-The workflow uses GitHub's built-in `GITHUB_TOKEN`; no personal access token needs to be created, copied, or committed. The repository must be public because installed apps need to download release assets without embedding a private token.
+Relay may request microphone access for voice channels and notification permission for desktop notifications. The app keeps Electron context isolation enabled, disables Node integration in the webpage, and opens external links in the system browser.
 
-### Publish later updates
-
-1. Change the root `package.json` version for each release (for example, from `1.0.1` to `1.0.2`).
-2. Commit and push the changed source to GitHub.
-3. Run **Actions → Build Relay Desktop → Run workflow** again, or push a matching version tag such as `v1.0.2`.
-4. Confirm the new GitHub Release contains the installer, `latest.yml`, and blockmap. Existing installations check for the new release automatically.
-
-You can also publish locally using `PUBLISH RELAY UPDATE.bat`, but that requires the optional local build toolchain and a release-write token. GitHub Actions is the recommended route because its build downloads happen on GitHub, not over your home internet connection. Never put a GitHub token in source code, `.env`, or a committed file.
-
-For signed production distribution, configure a Windows code-signing certificate with electron-builder's supported `CSC_LINK` / `CSC_KEY_PASSWORD` environment variables. Without signing, Windows may show SmartScreen warnings. Keep the same signing identity for future signed updates.
-
-## Local app data and backup
-
-The installed desktop app stores:
-
-- `%APPDATA%\Relay\data\relay.sqlite` — account, messages, friends, servers, settings, and other local database data.
-- `%APPDATA%\Relay\uploads\` — files uploaded to this local Relay instance.
-- `%APPDATA%\Relay\session-secret` — persistent random session-signing secret.
-- `%APPDATA%\Relay\relay.log` — local API and desktop startup/update log.
-
-Back up the `Relay` folder before moving to another PC or performing manual database recovery. Reinstalling/updating the program does not intentionally erase this folder.
-
-## Important distinction: local desktop, local social network
-
-This build runs the Relay backend locally on the computer where it is installed. Accounts, messages, servers, DMs, uploads, and presence are stored on that computer. **Two different computers will not share the same local database just because both have the app installed.** For multi-user communication between PCs over the internet, you need a centrally hosted Relay API/database (or an explicitly configured LAN server). This is different from the web app's previous hosted-backend arrangement.
-
-## Troubleshooting
-
-- If you see `ENOTCACHED` while running `npm install --offline`, that package is not in the local cache. Do not keep retrying offline; use the GitHub Actions cloud build instead.
-- If npm prints `allow-scripts` warnings for esbuild, the root `package.json` explicitly allows esbuild's install script. esbuild requires its install step to select/prepare its platform binary.
-- If the installer build reports missing builder tools during a deliberate local build, run `SETUP DESKTOP BUILDER.bat` and choose Y.
-- If the app fails at startup, inspect `%APPDATA%\Relay\relay.log`.
-- If the installed app reports missing runtime files, rebuild the installer using `BUILD RELAY DESKTOP.bat`; do not copy only `Relay.exe` from the install folder.
-- If an update is not detected, confirm that the installed build was configured with the correct GitHub owner/repository and that the GitHub Release has a matching `latest.yml` file.
-- Updates keep `%APPDATA%\Relay` intact; avoid deleting that folder if you want to preserve local accounts and messages.
+The desktop shell stores a small diagnostic log in `%APPDATA%\Relay\relay-desktop.log`. Account data and conversations remain in Relay's hosted database; reinstalling the desktop app does not remove them.

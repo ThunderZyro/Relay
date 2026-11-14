@@ -493,8 +493,11 @@ app.post('/api/dms', requireAuth, interactionLimiter, (req: AuthedRequest,res) =
 });
 app.patch('/api/dms/:dmId', requireAuth, (req: AuthedRequest,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
+  const dm=db.prepare('SELECT created_by,is_group FROM dms WHERE id=?').get(req.params.dmId) as any;
+  if(!dm?.is_group)return fail(res,400,'Only group conversations can be renamed.');
+  if(dm.created_by!==req.user!.id)return fail(res,403,'Only the group creator can rename this conversation.');
   const parsed=z.object({name:z.string().trim().min(1).max(60)}).safeParse(req.body); if(!parsed.success)return fail(res,400,'Group name must be between 1 and 60 characters.');
-  db.prepare('UPDATE dms SET name=? WHERE id=? AND is_group=1').run(parsed.data.name,req.params.dmId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
+  db.prepare('UPDATE dms SET name=? WHERE id=?').run(parsed.data.name,req.params.dmId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
@@ -510,6 +513,10 @@ app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: Authed
 app.delete('/api/dms/:dmId/members/:userId', requireAuth, asyncRoute(async (req,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
   const dm=db.prepare('SELECT created_by,is_group FROM dms WHERE id=?').get(req.params.dmId) as any; if(!dm)return fail(res,404,'Conversation not found.'); if(req.params.userId!==req.user!.id && (!dm.is_group || dm.created_by!==req.user!.id))return fail(res,403,'Only the group creator can remove another member.');
+  if(req.params.userId===dm.created_by && req.params.userId===req.user!.id){
+    const successor=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>? ORDER BY joined_at ASC LIMIT 1').get(req.params.dmId,req.params.userId) as any;
+    if(successor)db.prepare('UPDATE dms SET created_by=? WHERE id=?').run(successor.user_id,req.params.dmId);
+  }
   const removed=db.prepare('DELETE FROM dm_members WHERE dm_id=? AND user_id=?').run(req.params.dmId,req.params.userId);
   if(removed.changes)await revokeDmMemberRoom(req.params.dmId,req.params.userId);
   res.json({ok:true});
@@ -550,8 +557,9 @@ app.post('/api/servers/:serverId/join', requireAuth, (req: AuthedRequest,res) =>
 app.get('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
   const s=db.prepare('SELECT * FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); const m=membership(s.id,req.user!.id); if(!m)return fail(res,403,'You are not a member of this server.');
-  const categories=db.prepare('SELECT * FROM categories WHERE server_id=? ORDER BY position').all(s.id);
-  const channels=db.prepare('SELECT * FROM channels WHERE server_id=? ORDER BY position').all(s.id);
+  const canViewChannels=hasPermission(s.id,req.user!.id,'view_channels');
+  const categories=canViewChannels?db.prepare('SELECT * FROM categories WHERE server_id=? ORDER BY position').all(s.id):[];
+  const channels=canViewChannels?db.prepare('SELECT * FROM channels WHERE server_id=? ORDER BY position').all(s.id):[];
   const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN u.presence='online' AND CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' THEN 'idle' ELSE u.presence END AS presence,CASE WHEN u.activity_visible=0 THEN '' ELSE u.status_text END AS status_text,r.name AS role_name,m.role_id,m.timeout_until FROM memberships m JOIN users u ON u.id=m.user_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.server_id=? ORDER BY u.username`).all(s.id);
   res.json({server:s,member:m,categories,channels,members});
 });

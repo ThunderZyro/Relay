@@ -146,18 +146,7 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(secondStagedUpload.status,201,'expired staged uploads must be cleaned before applying the storage quota');
     const expiredUpload = await request(port, `/uploads/${firstUploadData.uploads[0].id}`, {cookie:aliceCookie});
     assert.equal(expiredUpload.response.status,404,'expired staged uploads must no longer be retrievable');
-    const secondUploadData=await secondStagedUpload.json() as {uploads:Array<{id:string}>};
-    const attachmentMessage=await request<{message:{id:string;attachments:Array<{id:string}>}}>(port,`/channels/${serverResult.data.channelId}/messages`,{
-      method:'POST',cookie:aliceCookie,body:{content:'Attachment cleanup regression test.',uploadIds:[secondUploadData.uploads[0].id]}
-    });
-    assert.equal(attachmentMessage.response.status,201);
-    assert.equal(attachmentMessage.data.message.attachments[0]?.id,secondUploadData.uploads[0].id,'message rows should include attachment metadata');
-    const attachmentBeforeDelete=await fetch(`${apiPath}:${port}/api/uploads/${secondUploadData.uploads[0].id}`,{headers:{cookie:aliceCookie}});
-    assert.equal(attachmentBeforeDelete.status,200,'the message attachment should be readable by its owner');
-    const deleteAttachmentMessage=await request(port,`/messages/${attachmentMessage.data.message.id}`,{method:'DELETE',cookie:aliceCookie});
-    assert.equal(deleteAttachmentMessage.response.status,200);
-    const attachmentAfterDelete=await fetch(`${apiPath}:${port}/api/uploads/${secondUploadData.uploads[0].id}`,{headers:{cookie:aliceCookie}});
-    assert.equal(attachmentAfterDelete.status,404,'deleting a message must remove its attachment record and stored file');
+
 
     const duplicateRegistration = await request(port, '/auth/register', {
       method: 'POST', body: { email: 'alice@example.test', username: 'alice_other', password: 'relay-test-password-010' }
@@ -179,6 +168,21 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
       method: 'POST', cookie: aliceCookie, body: { name: 'Integration Garden', description: 'Created by the API integration test.' }
     });
     assert.equal(serverResult.response.status, 201);
+
+    const freshAttachmentUpload=await uploadTextFile(port,aliceCookie,1024);
+    assert.equal(freshAttachmentUpload.status,201);
+    const freshAttachmentData=await freshAttachmentUpload.json() as {uploads:Array<{id:string}>};
+    const attachmentMessage=await request<{message:{id:string;attachments:Array<{id:string}>}}>(port,`/channels/${serverResult.data.channelId}/messages`,{
+      method:'POST',cookie:aliceCookie,body:{content:'Attachment cleanup regression test.',uploadIds:[freshAttachmentData.uploads[0].id]}
+    });
+    assert.equal(attachmentMessage.response.status,201);
+    assert.equal(attachmentMessage.data.message.attachments[0]?.id,freshAttachmentData.uploads[0].id,'message rows should include attachment metadata');
+    const attachmentBeforeDelete=await fetch(`${apiPath}:${port}/api/uploads/${freshAttachmentData.uploads[0].id}`,{headers:{cookie:aliceCookie}});
+    assert.equal(attachmentBeforeDelete.status,200,'the message attachment should be readable by its owner');
+    const deleteAttachmentMessage=await request(port,`/messages/${attachmentMessage.data.message.id}`,{method:'DELETE',cookie:aliceCookie});
+    assert.equal(deleteAttachmentMessage.response.status,200);
+    const attachmentAfterDelete=await fetch(`${apiPath}:${port}/api/uploads/${freshAttachmentData.uploads[0].id}`,{headers:{cookie:aliceCookie}});
+    assert.equal(attachmentAfterDelete.status,404,'deleting a message must remove its attachment record and stored file');
 
     const secondServer = await request<{server:{id:string}}>(port,'/servers',{
       method:'POST',cookie:aliceCookie,body:{name:'Other Garden',description:'A separate server for category isolation tests.'}

@@ -366,6 +366,13 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     const removedGroupMemberAccess=await request(port,`/dms/${groupDm.data.conversation.id}/messages`,{cookie:charlieCookie});
     assert.equal(removedGroupMemberAccess.response.status,403,'a removed group member must immediately lose access');
 
+    const successionGroup=await request<{conversation:{id:string}}>(port,'/dms',{method:'POST',cookie:aliceCookie,body:{userIds:[bobRegistration.data.user.id,charlieRegistration.data.user.id],name:'Ownership Transfer Group'}});
+    assert.equal(successionGroup.response.status,201);
+    const creatorLeaves=await request(port,`/dms/${successionGroup.data.conversation.id}/members/${aliceRegistration.data.user.id}`,{method:'DELETE',cookie:aliceCookie});
+    assert.equal(creatorLeaves.response.status,200);
+    const successorRenames=await request(port,`/dms/${successionGroup.data.conversation.id}`,{method:'PATCH',cookie:bobCookie,body:{name:'Bob owns this group now'}});
+    assert.equal(successorRenames.response.status,200,'the next member must become group creator when the old creator leaves');
+
     const createdMessage = await request<{ message: { id: string; content: string } }>(port, `/channels/${serverResult.data.channelId}/messages`, {
       method: 'POST', cookie: aliceCookie, body: { content: 'Persistent hello from Alice.' }
     });
@@ -380,6 +387,10 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
       method:'PATCH',cookie:aliceCookie,body:{roleId:pinOnlyRole.data.role.id}
     });
     assert.equal(assignPinOnly.response.status,200);
+    const hiddenServer=await request<{channels:any[];categories:any[]}>(port,`/servers/${serverResult.data.server.id}`,{cookie:daveCookie});
+    assert.equal(hiddenServer.response.status,200);
+    assert.equal(hiddenServer.data.channels.length,0,'members without view_channels must not see channel names');
+    assert.equal(hiddenServer.data.categories.length,0,'members without view_channels must not see category metadata');
     const hiddenPin=await request(port,`/messages/${createdMessage.data.message.id}/pin`,{method:'POST',cookie:daveCookie,body:{}});
     assert.equal(hiddenPin.response.status,403,'pin permission must not bypass channel visibility');
 

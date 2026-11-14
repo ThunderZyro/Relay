@@ -49,15 +49,23 @@ export default function Shell(){
        </div>
      </>:<>
        <div className="home-nav">
-         <Link to="/home" className={`side-item ${location.pathname==='/home'||location.pathname==='/channels/@me'?'selected':''}`} onClick={()=>setMobileNav(false)}><Home size={17}/> Home</Link>
+         <Link to="/home" className={`side-item ${location.pathname==='/home'?'selected':''}`} onClick={()=>setMobileNav(false)}><Home size={17}/> Home</Link>
+         <Link to="/channels/@me" className={`side-item ${location.pathname.startsWith('/channels/@me')?'selected':''}`} onClick={()=>setMobileNav(false)}><MessageCircle size={17}/> Messages</Link>
          <Link to="/friends" className={`side-item ${location.pathname==='/friends'?'selected':''}`} onClick={()=>setMobileNav(false)}><Users size={17}/> Friends</Link>
-         <Link to="/discover" className={`side-item ${location.pathname==='/discover'?'selected':''}`}><Compass size={17}/> Discover</Link>
-         <Link to="/events" className={`side-item ${location.pathname==='/events'?'selected':''}`}><CalendarDays size={17}/> Events</Link>
-         <Link to="/inbox" className={`side-item ${location.pathname==='/inbox'?'selected':''}`}><Bell size={17}/> Inbox</Link>
+         <Link to="/discover" className={`side-item ${location.pathname==='/discover'?'selected':''}`} onClick={()=>setMobileNav(false)}><Compass size={17}/> Communities</Link>
        </div>
-       <div className="dm-heading"><span>DIRECT MESSAGES</span><button onClick={()=>navigate('/friends')} aria-label="Start a conversation"><Plus size={16}/></button></div>
-       <div className="dm-list">{dms.map(dm=>{const other=dm.members.find(m=>m.id!==user?.id);return <Link key={dm.id} to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`}><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="sm" presence={other?.presence}/><span>{dm.name||dm.members.filter(m=>m.id!==user?.id).map(m=>m.username).join(', ')}</span></Link>;})}</div>
-       <div className="side-bottom-links"><Link to="/library"><Library size={15}/> Library</Link><Link to="/premium"><Crown size={15}/> Relay Plus</Link><Link to="/shop"><Store size={15}/> Shop</Link></div>
+       <div className="dm-heading"><span>RECENT CHATS</span><button onClick={()=>navigate('/friends')} aria-label="Start a conversation"><Plus size={16}/></button></div>
+       <div className="dm-list">{dms.slice(0,12).map(dm=>{const other=dm.members.find(m=>m.id!==user?.id);return <Link key={dm.id} to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`}><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="sm" presence={other?.presence}/><span>{dm.name||dm.members.filter(m=>m.id!==user?.id).map(m=>m.username).join(', ')}</span></Link>;})}</div>
+       <details className="side-more">
+         <summary>More</summary>
+         <div className="side-more-links">
+           <Link to="/events"><CalendarDays size={15}/> Events</Link>
+           <Link to="/inbox"><Bell size={15}/> Inbox</Link>
+           <Link to="/library"><Library size={15}/> Library</Link>
+           <Link to="/premium"><Crown size={15}/> Relay Plus</Link>
+           <Link to="/shop"><Store size={15}/> Shop</Link>
+         </div>
+       </details>
      </>}
      <div className="user-panel"><Avatar name={user?.username||'User'} src={user?.avatar} size="md" presence={user?.presence}/><div className="user-meta"><strong>{user?.username}</strong><small>{user?.presence||'offline'}</small></div><button className="icon-btn" onClick={logout} title="Log out" aria-label="Log out"><LogOut size={17}/></button><button className="icon-btn" onClick={()=>navigate('/settings/account')} title="User settings" aria-label="User settings"><Settings size={17}/></button></div>
    </aside>

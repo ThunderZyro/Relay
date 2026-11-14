@@ -1004,10 +1004,20 @@ io.on('connection',(socket)=>{
   });
   socket.on('room:join-channel',(channelId:string,ack?:Function)=>{if(typeof channelId!=='string'||!canReadChannel(channelId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`channel:${channelId}`);ack?.({ok:true});});
   socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
-  socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(data?.channelId||'') as any;const canTypeChannel=!!data?.channelId&&!!channel&&canReadChannel(data.channelId,user.id)&&!isTimedOut(channel.server_id,user.id);const room=canTypeChannel?`channel:${data!.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
-  socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(data?.channelId||'') as any;const canTypeChannel=!!data?.channelId&&!!channel&&canReadChannel(data.channelId,user.id)&&!isTimedOut(channel.server_id,user.id);const room=canTypeChannel?`channel:${data!.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
+  const typingRoom=(data:any)=>{
+    const channelId=typeof data?.channelId==='string'?data.channelId:null;
+    const dmId=typeof data?.dmId==='string'?data.dmId:null;
+    if(channelId){
+      const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(channelId) as any;
+      if(channel&&canReadChannel(channelId,user.id)&&!isTimedOut(channel.server_id,user.id))return `channel:${channelId}`;
+      return null;
+    }
+    return dmId&&canAccessDm(dmId,user.id)?`dm:${dmId}`:null;
+  };
+  socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const room=typingRoom(data);if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
+  socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const room=typingRoom(data);if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
   socket.on('voice:join',async(data:{channelId:string},ack?:Function)=>{
-    if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}
+    if(typeof data?.channelId!=='string'||!canJoinVoiceChannel(data.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}
     const room=`voice:${data.channelId}`;
     socket.join(room);
     socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});
@@ -1020,6 +1030,7 @@ io.on('connection',(socket)=>{
       }))});
     } catch(error) {
       socket.leave(room);
+      socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
       ack?.({ok:false,error:'Relay could not load voice participants. Please reconnect.'});
       console.error('Relay voice participant lookup failed:',error);
     }
@@ -1031,10 +1042,20 @@ io.on('connection',(socket)=>{
     socket.leave(room);
     socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
   });
-  socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,...data});});
+  socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{
+    if(typeof data?.channelId!=='string'||typeof data.muted!=='boolean'||typeof data.deafened!=='boolean')return;
+    if(canJoinVoiceChannel(data.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,channelId:data.channelId,muted:data.muted,deafened:data.deafened});
+  });
   socket.on('webrtc:signal',async(data:{toSocketId:string;payload:unknown;channelId:string})=>{
-    const room=`voice:${data?.channelId}`;
-    if(!canJoinVoiceChannel(data?.channelId,user.id)||!socket.rooms.has(room)||typeof data?.toSocketId!=='string')return;
+    if(typeof data?.channelId!=='string'||typeof data.toSocketId!=='string'||data.toSocketId.length>128)return;
+    const signal=data.payload as any;
+    const validSignal=!!signal&&typeof signal==='object'&&(
+      (signal.type==='candidate'&&typeof signal.candidate?.candidate==='string')||
+      ((signal.type==='offer'||signal.type==='answer')&&typeof signal.sdp?.sdp==='string')
+    );
+    if(!validSignal)return;
+    const room=`voice:${data.channelId}`;
+    if(!canJoinVoiceChannel(data.channelId,user.id)||!socket.rooms.has(room))return;
     try {
       const targets=await io.in(data.toSocketId).fetchSockets();
       if(targets.some(target=>target.rooms.has(room))) {

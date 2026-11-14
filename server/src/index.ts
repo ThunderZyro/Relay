@@ -847,6 +847,12 @@ function userStoredUploadBytes(userId:string) {
 cleanupExpiredStagedUploads();
 const stagedUploadCleanupTimer=setInterval(()=>{try{cleanupExpiredStagedUploads();}catch(error){console.error('Staged upload cleanup failed.',error);}},60*60*1000);
 stagedUploadCleanupTimer.unref();
+const shutdownRelay=()=>{
+  clearInterval(stagedUploadCleanupTimer);
+  io.close();
+};
+process.once('SIGTERM',shutdownRelay);
+process.once('SIGINT',shutdownRelay);
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:maxUpload,files:8},fileFilter:(_req,file,cb)=>{const ext=path.extname(file.originalname).toLowerCase();const ok=allowedMime.has(file.mimetype)&&!['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1'].includes(ext);const finish=cb as ((error: Error)=>void)&((error: null,acceptFile: boolean)=>void);if(ok)finish(null,true);else finish(new Error('This file type is not allowed.'));}});
 app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8), asyncRoute(async (req:AuthedRequest,res) => {
   const files=(req.files||[]) as Express.Multer.File[];
@@ -900,9 +906,11 @@ io.on('connection',(socket)=>{
   const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
   // Vercel Hobby WebSocket invocations are capped at 300 seconds. Reconnect
   // early so clients can restore their room membership and missed messages.
-  const functionLifetimeTimer=setTimeout(()=>socket.disconnect(true),4*60*1000);
+  const functionLifetimeTimer=(process.env.VERCEL==='1'||!!process.env.VERCEL_ENV)
+    ? setTimeout(()=>socket.disconnect(true),4*60*1000)
+    : undefined;
   sessionExpiryTimer.unref();
-  functionLifetimeTimer.unref();
+  functionLifetimeTimer?.unref();
   socket.use((_packet,next)=>{
     const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
     if(!active){socket.disconnect(true);return;}
@@ -924,7 +932,7 @@ io.on('connection',(socket)=>{
   socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:user,payload:data.payload,channelId:data.channelId});}});
   socket.on('disconnect',()=>{
     clearTimeout(sessionExpiryTimer);
-    clearTimeout(functionLifetimeTimer);
+    if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);
     for(const room of socket.rooms){if(room.startsWith('voice:'))socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});}
   });
 });

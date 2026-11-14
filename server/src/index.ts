@@ -164,12 +164,9 @@ async function revokeChannelRooms(channel: {id:string;type:string}) {
   }
   io.in(`channel:${channel.id}`).socketsLeave(`channel:${channel.id}`);
 }
-function deleteStoredObjects(storageNames: string[]) {
-  for (const storageName of new Set(storageNames.filter(Boolean))) {
-    if (path.basename(storageName) === storageName) {
-      void deleteUpload(storageName).catch(error => console.error('Stored upload cleanup failed.', error));
-    }
-  }
+async function deleteStoredObjects(storageNames: string[]) {
+  const keys=[...new Set(storageNames.filter(Boolean))].filter(storageName=>path.basename(storageName)===storageName);
+  await Promise.all(keys.map(storageName=>deleteUpload(storageName).catch(error=>console.error('Stored upload cleanup failed.',error))));
 }
 function notify(userId: string, type: string, title: string, body: string, href: string) {
   const pref=db.prepare('SELECT data FROM settings WHERE user_id=?').get(userId) as any; let prefs:any={}; try{prefs=JSON.parse(pref?.data||'{}');}catch{}
@@ -515,25 +512,25 @@ app.patch('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
   if(!p.success)return fail(res,400,'Invalid server details.'); const fields=Object.entries(p.data); if(fields.length)db.prepare(`UPDATE servers SET ${fields.map(([k])=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(([,v])=>v),req.params.serverId);
   res.json({server:db.prepare('SELECT * FROM servers WHERE id=?').get(req.params.serverId)});
 });
-app.delete('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
+app.delete('/api/servers/:serverId', requireAuth, asyncRoute(async (req,res) => {
   const s=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); if(s.owner_id!==req.user!.id)return fail(res,403,'Only the server owner can delete this server.');
   const members=db.prepare('SELECT user_id FROM memberships WHERE server_id=?').all(req.params.serverId) as any[];
   const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
   const files=db.prepare('SELECT a.storage_name FROM attachments a JOIN messages m ON m.id=a.message_id JOIN channels c ON c.id=m.channel_id WHERE c.server_id=?').all(req.params.serverId) as any[];
   db.prepare('DELETE FROM servers WHERE id=?').run(req.params.serverId);
-  members.forEach(member=>void revokeServerMemberRooms(member.user_id,channels));
-  deleteStoredObjects(files.map((file:any)=>file.storage_name));
+  await Promise.all(members.map(member=>revokeServerMemberRooms(member.user_id,channels)));
+  await deleteStoredObjects(files.map((file:any)=>file.storage_name));
   res.json({ok:true});
-});
-app.post('/api/servers/:serverId/leave', requireAuth, (req: AuthedRequest,res) => {
+}));
+app.post('/api/servers/:serverId/leave', requireAuth, asyncRoute(async (req,res) => {
   const s=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); if(s.owner_id===req.user!.id)return fail(res,400,'Transfer ownership before leaving as the owner.');
   const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
   db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.user!.id);
-  void revokeServerMemberRooms(req.user!.id,channels);
+  await revokeServerMemberRooms(req.user!.id,channels);
   res.json({ok:true});
-});
+}));
 app.post('/api/servers/:serverId/channels', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
   const p=z.object({name:z.string().trim().min(1).max(80).regex(/^[\w-]+$/),type:z.enum(['text','voice','announcement']).default('text'),topic:z.string().max(200).optional(),category_id:z.string().nullable().optional()}).safeParse(req.body);
@@ -551,15 +548,15 @@ app.patch('/api/channels/:channelId', requireAuth, (req: AuthedRequest,res) => {
   const fields=Object.entries(p.data); if(fields.length)db.prepare(`UPDATE channels SET ${fields.map(([k])=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(([,v])=>v),c.id);
   res.json({channel:db.prepare('SELECT * FROM channels WHERE id=?').get(c.id)});
 });
-app.delete('/api/channels/:channelId', requireAuth, (req: AuthedRequest,res) => {
+app.delete('/api/channels/:channelId', requireAuth, asyncRoute(async (req,res) => {
   const c=db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.channelId) as any; if(!c)return fail(res,404,'Channel not found.');
   if(!hasPermission(c.server_id,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
   const files=db.prepare('SELECT a.storage_name FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.channel_id=?').all(c.id) as any[];
   db.prepare('DELETE FROM channels WHERE id=?').run(c.id);
-  void revokeChannelRooms({id:c.id,type:c.type});
-  deleteStoredObjects(files.map((file:any)=>file.storage_name));
+  await revokeChannelRooms({id:c.id,type:c.type});
+  await deleteStoredObjects(files.map((file:any)=>file.storage_name));
   res.json({ok:true});
-});
+}));
 app.post('/api/servers/:serverId/categories', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission.');
   const p=z.object({name:z.string().trim().min(1).max(60)}).safeParse(req.body); if(!p.success)return fail(res,400,'Category name is required.');
@@ -611,7 +608,7 @@ app.patch('/api/servers/:serverId/members/:userId/role', requireAuth, (req: Auth
   res.json({ok:true});
 });
 
-app.delete('/api/servers/:serverId/members/:userId', requireAuth, (req: AuthedRequest,res) => {
+app.delete('/api/servers/:serverId/members/:userId', requireAuth, asyncRoute(async (req,res) => {
   const action=req.query.action==='ban'?'ban':'kick'; const perm=action==='ban'?'ban_members':'kick_members';
   if(!hasPermission(req.params.serverId,req.user!.id,perm))return fail(res,403,`You do not have permission to ${action} members.`);
   if(req.params.userId===req.user!.id)return fail(res,400,'Use Leave Server to leave.');
@@ -623,10 +620,10 @@ app.delete('/api/servers/:serverId/members/:userId', requireAuth, (req: AuthedRe
   const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
   if(action==='ban')db.prepare('INSERT INTO bans(server_id,user_id,moderator_id,reason) VALUES(?,?,?,?) ON CONFLICT(server_id,user_id) DO UPDATE SET moderator_id=EXCLUDED.moderator_id,reason=EXCLUDED.reason').run(req.params.serverId,req.params.userId,req.user!.id,String(req.body?.reason||'').slice(0,200));
   db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId);
-  void revokeServerMemberRooms(req.params.userId,channels);
+  await revokeServerMemberRooms(req.params.userId,channels);
   res.json({ok:true,action});
-});
-app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
+}));
+app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, asyncRoute(async (req,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'timeout_members'))return fail(res,403,'You do not have permission to timeout members.');
   if(req.params.userId===req.user!.id)return fail(res,400,'You cannot timeout yourself.');
   const p=z.object({minutes:z.number().int().min(1).max(10080)}).safeParse(req.body); if(!p.success)return fail(res,400,'Timeout must be between 1 minute and 7 days.');
@@ -634,9 +631,9 @@ app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: Au
   const actor=membership(req.params.serverId,req.user!.id); const target=membership(req.params.serverId,req.params.userId); if(!target)return fail(res,404,'Member not found.'); if(ownerId!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot timeout an equal or higher role.');
   const until=new Date(Date.now()+p.data.minutes*60000).toISOString(); const r=db.prepare('UPDATE memberships SET timeout_until=? WHERE server_id=? AND user_id=?').run(until,req.params.serverId,req.params.userId); if(!r.changes)return fail(res,404,'Member not found.');
   const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
-  void revokeServerMemberRooms(req.params.userId,channels,true);
+  await revokeServerMemberRooms(req.params.userId,channels,true);
   res.json({ok:true,timeout_until:until});
-});
+}));
 app.delete('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'timeout_members'))return fail(res,403,'You do not have permission.');
   const server=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
@@ -748,7 +745,7 @@ app.patch('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
   const p=z.object({content:z.string().trim().min(1).max(4000)}).safeParse(req.body); if(!p.success)return fail(res,400,'Message must contain 1 to 4000 characters.');
   db.prepare('UPDATE messages SET content=?,edited_at=? WHERE id=?').run(p.data.content,now(),m.id); const row=messageRows('m.id=?',[m.id],1)[0]; io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:updated',row); res.json({message:row});
 });
-app.delete('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
+app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) => {
   const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   const serverId=m.channel_id?(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any)?.server_id:null;
   const canAccess=m.channel_id?canReadChannel(m.channel_id,req.user!.id):canAccessDm(m.dm_id,req.user!.id);
@@ -756,9 +753,9 @@ app.delete('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => 
   if(m.sender_id!==req.user!.id && !(serverId && hasPermission(serverId,req.user!.id,'manage_messages')))return fail(res,403,'You cannot delete this message.');
   const files=db.prepare('SELECT storage_name FROM attachments WHERE message_id=?').all(m.id) as any[];
   db.prepare('DELETE FROM attachments WHERE message_id=?').run(m.id);
-  deleteStoredObjects(files.map((file:any)=>file.storage_name));
+  await deleteStoredObjects(files.map((file:any)=>file.storage_name));
   db.prepare('UPDATE messages SET deleted_at=?,content=? WHERE id=?').run(now(),'This message was deleted.',m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:deleted',{id:m.id}); res.json({ok:true});
-});
+}));
 app.post('/api/messages/:messageId/report', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
   const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(!m.channel_id)return fail(res,400,'Only server-channel messages can be submitted to a server moderation queue.'); if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.' );

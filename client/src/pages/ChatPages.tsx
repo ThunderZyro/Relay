@@ -152,6 +152,7 @@ function VoiceJoin({channelId}:{channelId:string}){
    };
    live.on('connect',restoreVoiceRoom);
    live.on('disconnect',()=>{for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);});
+   live.on('voice:forced-leave',(event:any)=>{if(event?.channelId===channelId){toast.show(event.reason||'Your voice access has ended.','info');leave();}});
    live.on('voice:participant',(participant:any)=>{
     if(participant.state==='left'){removePeer(participant.socketId);return;}
     setPeers(current=>[...current.filter(peer=>peer.socketId!==participant.socketId),participant]);

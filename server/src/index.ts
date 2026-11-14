@@ -208,8 +208,12 @@ function notify(userId: string, type: string, title: string, body: string, href:
 }
 function userPublic(row: any) {
   if (!row) return null;
+  const lastSeen=row.last_seen?new Date(row.last_seen).getTime():0;
+  const age=lastSeen?Date.now()-lastSeen:0;
+  const stale=!!lastSeen&&age>2*60*1000;
+  const presence=row.activity_visible===0||stale?'offline':row.presence==='online'&&lastSeen&&age>60*1000?'idle':row.presence;
   return { id: row.id, username: row.username, avatar: row.avatar, banner: row.banner, bio: row.bio,
-    status_text: row.activity_visible === 0 ? '' : row.status_text, presence: row.activity_visible === 0 ? 'offline' : row.presence,
+    status_text: row.activity_visible === 0 ? '' : row.status_text, presence,
     created_at: row.created_at };
 }
 function blockedEither(a: string, b: string) {
@@ -406,7 +410,7 @@ app.patch('/api/privacy', requireAuth, (req: AuthedRequest,res) => {
 // Friends, blocks, and DMs
 app.get('/api/friends', requireAuth, (req: AuthedRequest,res) => {
   const uid=req.user!.id;
-  const rows=db.prepare(`SELECT f.*,u.id AS person_id,u.username,u.avatar,u.presence,u.status_text,u.activity_visible
+  const rows=db.prepare(`SELECT f.*,u.id AS person_id,u.username,u.avatar,u.presence,u.status_text,u.activity_visible,u.last_seen
     FROM friendships f JOIN users u ON u.id=CASE WHEN f.requester_id=? THEN f.addressee_id ELSE f.requester_id END
     WHERE (f.requester_id=? OR f.addressee_id=?) ORDER BY f.created_at DESC`).all(uid,uid,uid) as any[];
   res.json({friends:rows.map(r=>({id:r.id,status:r.status,direction:r.requester_id===uid?'outgoing':'incoming',user:userPublic({...r,id:r.person_id})}))});

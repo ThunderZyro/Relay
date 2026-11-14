@@ -728,11 +728,25 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
     if(!canAccessDm(destination.dmId!,req.user!.id))return fail(res,403,'You cannot access this conversation.');
   }
   if(p.data.reply_to){const parent=db.prepare('SELECT channel_id,dm_id FROM messages WHERE id=?').get(p.data.reply_to) as any;if(!parent || parent.channel_id!==(destination.channelId||null) || parent.dm_id!==(destination.dmId||null))return fail(res,400,'The replied-to message is not in this conversation.');}
-  if(p.data.uploadIds?.length){for(const aid of p.data.uploadIds){if(!db.prepare('SELECT 1 FROM staged_uploads WHERE id=? AND user_id=?').get(aid,req.user!.id))return fail(res,403,'One of those uploads is invalid or no longer available.');}}
   const mid=id();
-  db.prepare('INSERT INTO messages(id,channel_id,dm_id,sender_id,content,reply_to) VALUES(?,?,?,?,?,?)').run(mid,destination.channelId||null,destination.dmId||null,req.user!.id,p.data.content,p.data.reply_to||null);
-  if(p.data.uploadIds?.length){for(const aid of p.data.uploadIds){const row=db.prepare('SELECT id FROM staged_uploads WHERE id=? AND user_id=?').get(aid,req.user!.id) as any; if(row){db.prepare('INSERT INTO attachments(id,message_id,filename,mime,size,storage_name) SELECT id,?,filename,mime,size,storage_name FROM staged_uploads WHERE id=?').run(mid,aid); db.prepare('DELETE FROM staged_uploads WHERE id=?').run(aid);}}}
-  if(destination.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),destination.dmId);
+  const created=db.transaction(()=>{
+    if(p.data.uploadIds?.length){
+      for(const aid of p.data.uploadIds){
+        const staged=db.prepare(`SELECT 1 FROM staged_uploads WHERE id=? AND user_id=? AND created_at::timestamptz>NOW()-?::interval`).get(aid,req.user!.id,`${stagedUploadTtlHours} hours`);
+        if(!staged)return false;
+      }
+    }
+    db.prepare('INSERT INTO messages(id,channel_id,dm_id,sender_id,content,reply_to) VALUES(?,?,?,?,?,?)').run(mid,destination.channelId||null,destination.dmId||null,req.user!.id,p.data.content,p.data.reply_to||null);
+    if(p.data.uploadIds?.length){
+      for(const aid of p.data.uploadIds){
+        db.prepare('INSERT INTO attachments(id,message_id,filename,mime,size,storage_name) SELECT id,?,filename,mime,size,storage_name FROM staged_uploads WHERE id=? AND user_id=?').run(mid,aid,req.user!.id);
+        db.prepare('DELETE FROM staged_uploads WHERE id=? AND user_id=?').run(aid,req.user!.id);
+      }
+    }
+    if(destination.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),destination.dmId);
+    return true;
+  })();
+  if(!created)return fail(res,403,'One of those uploads has expired or is no longer available. Attach it again.');
   const row=messageRows(`m.id=?`,[mid],1)[0];
   const room=destination.channelId?`channel:${destination.channelId}`:`dm:${destination.dmId}`; io.to(room).emit('message:new',row);
   if(destination.dmId){const users=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(destination.dmId,req.user!.id) as any[]; users.forEach(u=>notify(u.user_id,'dm',`Message from ${req.user!.username}`,p.data.content.slice(0,100),`/channels/@me/${destination.dmId}`));}

@@ -64,7 +64,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           $version = node -p "require('./package.json').version"
           $tag = "v$version"

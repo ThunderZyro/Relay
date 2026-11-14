@@ -113,6 +113,12 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
   try {
     await waitForApi(port, processOne.child, processOne.logs);
 
+    const health=await request<{status:string;passwordRecoveryConfigured:boolean;missingStorageEnvironment:string[]}>(port,'/health');
+    assert.equal(health.response.status,200);
+    assert.equal(health.data.status,'ok','local and test deployments may use local disk for uploads');
+    assert.equal(health.data.passwordRecoveryConfigured,false);
+    assert.deepEqual(health.data.missingStorageEnvironment,[]);
+
     const missingRequestMarker = await request(port, '/auth/register', {
       method: 'POST',
       requestMarker: false,
@@ -142,6 +148,8 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(setOffline.response.status,200);
     const offlineHeartbeat=await request(port,'/presence/heartbeat',{method:'POST',cookie:aliceCookie,body:{}});
     assert.equal(offlineHeartbeat.response.status,200);
+    const legacyOfflineHeartbeat=await request(port,'/presence/heartbeat',{method:'GET',cookie:aliceCookie});
+    assert.equal(legacyOfflineHeartbeat.response.status,200,'older clients using GET heartbeats must remain compatible');
     const offlineMe=await request<{user:{presence:string}}>(port,'/auth/me',{cookie:aliceCookie});
     assert.equal(offlineMe.data.user.presence,'offline','presence heartbeats must not override a user-selected offline status');
     const restoreOnline=await request(port,'/presence',{method:'PATCH',cookie:aliceCookie,body:{presence:'online'}});

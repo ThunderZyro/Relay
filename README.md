@@ -65,7 +65,7 @@ Configure these server-side environment variables:
 
 For local or self-hosted deployments, use the included Dockerfile. Set `DATABASE_URL` and the required secrets in the hosting provider's environment-variable settings. Do not put production credentials into the Docker image or source control.
 
-Password recovery returns a clear configuration error until Resend is set up. Voice uses public STUN when no TURN configuration is supplied; STUN alone cannot relay media through every restrictive network.
+Password recovery returns a clear configuration status until both Resend variables are configured. The public `/api/health` endpoint reports `status: degraded` in production when persistent S3-compatible storage is unavailable, lists missing storage variable names (never their values), and reports whether password recovery is configured. Production uploads are rejected with HTTP 503 rather than written to temporary serverless disk. Voice uses public STUN when no TURN configuration is supplied; STUN alone cannot relay media through every restrictive network.
 
 ## Realtime behavior
 

@@ -7,7 +7,9 @@ import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } fro
 const here=path.dirname(fileURLToPath(import.meta.url));
 const uploadDir=path.resolve(process.cwd(),process.env.UPLOAD_DIR||'../uploads');
 const bucket=process.env.RELAY_UPLOAD_BUCKET||'relay-uploads';
-const cloudReady=!!(process.env.AWS_ACCESS_KEY_ID&&process.env.AWS_SECRET_ACCESS_KEY&&process.env.AWS_ENDPOINT_URL_S3&&process.env.AWS_REGION);
+const requiredStorageEnvironment=['AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_ENDPOINT_URL_S3','AWS_REGION'] as const;
+export const missingStorageEnvironment=requiredStorageEnvironment.filter(key=>!process.env[key]?.trim());
+const cloudReady=missingStorageEnvironment.length===0;
 const s3=cloudReady?new S3Client({region:process.env.AWS_REGION,endpoint:process.env.AWS_ENDPOINT_URL_S3,forcePathStyle:true,credentials:{accessKeyId:process.env.AWS_ACCESS_KEY_ID!,secretAccessKey:process.env.AWS_SECRET_ACCESS_KEY!}}):null;
 
 export const persistentStorageEnabled=!!s3;

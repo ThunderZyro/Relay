@@ -1,8 +1,8 @@
-import React,{useState} from 'react';
+import React,{useEffect,useState} from 'react';
 import {Navigate,Route,Routes,Link,useNavigate} from 'react-router-dom';
 import {ArrowLeft,ArrowRight,AtSign,LockKeyhole} from 'lucide-react';
 import {AuthProvider,useAuth,ToastProvider,useToast,announceAuthChange} from './state';
-import {post} from './api';
+import {api,post} from './api';
 import Shell from './components/Shell';
 import {Button,Field,Loading} from './components/ui';
 import {HomePage,FriendsPage,DiscoverPage,ProfilePage,InvitePage,EventsPage,InfoPage,InboxPage,HelpPage} from './pages/CorePages';
@@ -71,7 +71,7 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
            <input value={email} onChange={e=>setEmail(e.target.value)} type="email" autoComplete="email" maxLength={254} required placeholder="you@example.com"/>
           </Field>
           <Field label="Username">
-           <input value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" minLength={3} maxLength={24} required pattern="[A-Za-z0-9_.-]+" placeholder="Choose a username"/>
+           <input value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" minLength={3} maxLength={24} required pattern="[A-Za-z0-9_.\\-]+" placeholder="Choose a username"/>
           </Field>
          </>
        : <Field label="Email or username">
@@ -94,12 +94,13 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
 }
 
 function PasswordRecovery({reset=false}:{reset?:boolean}){
- const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [notice,setNotice]=useState('');const navigate=useNavigate();const toast=useToast();
+ const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [notice,setNotice]=useState('');const [recoveryConfigured,setRecoveryConfigured]=useState<boolean|null>(null);const navigate=useNavigate();const toast=useToast();
+ useEffect(()=>{if(reset)return;let active=true;api<{passwordRecoveryConfigured?:boolean}>('/health').then(result=>{if(active&&typeof result.passwordRecoveryConfigured==='boolean')setRecoveryConfigured(result.passwordRecoveryConfigured);}).catch(()=>{});return()=>{active=false;};},[reset]);
  const submit=async(e:React.FormEvent)=>{e.preventDefault();setBusy(true);setError('');setNotice('');try{
   if(reset){const token=new URLSearchParams(window.location.search).get('token')||'';await post('/auth/reset-password',{token,password});toast.show('Password updated. Sign in with your new password.','success');navigate('/login');}
   else{const result=await post<{message:string}>('/auth/forgot-password',{email});setNotice(result.message||'If that email belongs to a Relay account, a reset link is on its way.');}
  }catch(err:any){setError(err.message||'Relay could not complete that request.');}finally{setBusy(false);}};
- return <main className="auth-screen"><div className="auth-simple"><Link to="/login" className="auth-brand"><span className="brand-mark">R</span><span>relay</span></Link><h1 className="auth-tagline">{reset?'Choose a new password.':'Get back into Relay.'}</h1><section className="auth-form-side"><div className="auth-form-top">Remembered it? <Link to="/login">Sign in</Link></div><div className="auth-card"><div className="auth-form-heading"><h1>{reset?'Reset your password':'Password recovery'}</h1><p>{reset?'Choose a new password for your Relay account.':'We will email you a secure, one-time reset link.'}</p></div><form className="form-stack" onSubmit={submit}>{reset?<Field label="New password"><input type="password" autoComplete="new-password" minLength={10} maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 10 characters"/></Field>:<Field label="Account email"><input type="email" autoComplete="email" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></Field>}{error&&<div className="form-error" role="alert">{error}</div>}{notice&&<div className="form-success" role="status">{notice}</div>}<Button type="submit" disabled={busy}>{busy?'Please wait…':reset?'Update password':'Send reset link'} <ArrowRight size={16}/></Button></form></div></section></div></main>;
+ return <main className="auth-screen"><div className="auth-simple"><Link to="/login" className="auth-brand"><span className="brand-mark">R</span><span>relay</span></Link><h1 className="auth-tagline">{reset?'Choose a new password.':'Get back into Relay.'}</h1><section className="auth-form-side"><div className="auth-form-top">Remembered it? <Link to="/login">Sign in</Link></div><div className="auth-card"><div className="auth-form-heading"><h1>{reset?'Reset your password':'Password recovery'}</h1><p>{reset?'Choose a new password for your Relay account.':recoveryConfigured===false?'Password recovery email is not enabled yet. Contact your Relay administrator for help.':recoveryConfigured===true?'We will email you a secure, one-time reset link.':'Checking whether password recovery is available…'}</p></div><form className="form-stack" onSubmit={submit}>{reset?<Field label="New password"><input type="password" autoComplete="new-password" minLength={10} maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 10 characters"/></Field>:<Field label="Account email"><input type="email" autoComplete="email" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></Field>}{error&&<div className="form-error" role="alert">{error}</div>}{notice&&<div className="form-success" role="status">{notice}</div>}<Button type="submit" disabled={busy}>{busy?'Please wait…':reset?'Update password':'Send reset link'} <ArrowRight size={16}/></Button></form></div></section></div></main>;
 }
 
 function Protected(){const {user,loading}=useAuth();if(loading)return <Loading label="Checking session"/>;if(!user)return <Navigate to="/login" replace/>;return <Shell key={user.id}/>;}

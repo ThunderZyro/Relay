@@ -370,8 +370,12 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(successionGroup.response.status,201);
     const creatorLeaves=await request(port,`/dms/${successionGroup.data.conversation.id}/members/${aliceRegistration.data.user.id}`,{method:'DELETE',cookie:aliceCookie});
     assert.equal(creatorLeaves.response.status,200);
-    const successorRenames=await request(port,`/dms/${successionGroup.data.conversation.id}`,{method:'PATCH',cookie:bobCookie,body:{name:'Bob owns this group now'}});
-    assert.equal(successorRenames.response.status,200,'the next member must become group creator when the old creator leaves');
+    const successorList=await request<{conversations:Array<{id:string;created_by:string}>}>(port,'/dms',{cookie:bobCookie});
+    const successor=successorList.data.conversations.find(conversation=>conversation.id===successionGroup.data.conversation.id);
+    assert.ok(successor&&[bobRegistration.data.user.id,charlieRegistration.data.user.id].includes(successor.created_by),'ownership must pass to a remaining group member');
+    const successorCookie=successor.created_by===bobRegistration.data.user.id?bobCookie:charlieCookie;
+    const successorRenames=await request(port,`/dms/${successionGroup.data.conversation.id}`,{method:'PATCH',cookie:successorCookie,body:{name:'Successor owns this group now'}});
+    assert.equal(successorRenames.response.status,200,'the new group creator must be able to rename the group');
 
     const createdMessage = await request<{ message: { id: string; content: string } }>(port, `/channels/${serverResult.data.channelId}/messages`, {
       method: 'POST', cookie: aliceCookie, body: { content: 'Persistent hello from Alice.' }

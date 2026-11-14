@@ -101,7 +101,8 @@ async function uploadTextFile(port:number,cookie:string,size:number) {
   });
 }
 
-test('validates accounts, bounds invites, enforces DM privacy and permissions, and preserves PostgreSQL data', { skip: !process.env.DATABASE_URL }, async () => {
+test('validates accounts, bounds invites, enforces DM privacy and permissions, and preserves PostgreSQL data', { skip: process.env.RELAY_RUN_DB_TESTS !== 'true' }, async () => {
+  assert.ok(process.env.DATABASE_URL, 'DATABASE_URL must point to a disposable PostgreSQL database when Relay integration tests are enabled.');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-api-test-'));
   const port = await freePort();
   const uploadDir = path.join(dir, 'uploads');

@@ -514,7 +514,7 @@ app.delete('/api/dms/:dmId/members/:userId', requireAuth, asyncRoute(async (req,
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
   const dm=db.prepare('SELECT created_by,is_group FROM dms WHERE id=?').get(req.params.dmId) as any; if(!dm)return fail(res,404,'Conversation not found.'); if(req.params.userId!==req.user!.id && (!dm.is_group || dm.created_by!==req.user!.id))return fail(res,403,'Only the group creator can remove another member.');
   if(req.params.userId===dm.created_by && req.params.userId===req.user!.id){
-    const successor=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>? ORDER BY joined_at ASC LIMIT 1').get(req.params.dmId,req.params.userId) as any;
+    const successor=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>? ORDER BY joined_at ASC,user_id ASC LIMIT 1').get(req.params.dmId,req.params.userId) as any;
     if(successor)db.prepare('UPDATE dms SET created_by=? WHERE id=?').run(successor.user_id,req.params.dmId);
   }
   const removed=db.prepare('DELETE FROM dm_members WHERE dm_id=? AND user_id=?').run(req.params.dmId,req.params.userId);

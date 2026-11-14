@@ -370,7 +370,9 @@ app.patch('/api/profile', requireAuth, (req: AuthedRequest,res) => {
     catch { return fail(res,400,'The profile could not be saved.'); }
   }
   const row=db.prepare('SELECT * FROM users WHERE id=?').get(req.user!.id) as any;
-  res.json({user:userPublic(row)});
+  // This authenticated self-edit response may include the account email. Public
+  // profile lookups continue to use userPublic() and never expose email addresses.
+  res.json({user:{...userPublic(row),email:row.email}});
 });
 app.get('/api/sessions', requireAuth, (req: AuthedRequest,res) => {
   res.json({sessions:db.prepare('SELECT id,user_agent,created_at,last_active,expires_at FROM sessions WHERE user_id=? ORDER BY created_at DESC').all(req.user!.id)});

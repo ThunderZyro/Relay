@@ -144,6 +144,16 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(aliceRegistration.response.status, 201);
     const aliceCookie = sessionCookie(aliceRegistration.response);
 
+    const savedProfile=await request<{user:{email:string;username:string;bio:string}}>(port,'/profile',{
+      method:'PATCH',cookie:aliceCookie,body:{bio:'Profile save must preserve account details.'}
+    });
+    assert.equal(savedProfile.response.status,200);
+    assert.equal(savedProfile.data.user.email,'alice@example.test','saving the signed-in profile must keep the account email available to the settings screen');
+    assert.equal(savedProfile.data.user.bio,'Profile save must preserve account details.');
+    const publicProfile=await request<{user:Record<string,unknown>}>(port,`/profile/${aliceRegistration.data.user.id}`,{cookie:aliceCookie});
+    assert.equal(publicProfile.response.status,200);
+    assert.equal(publicProfile.data.user.email,undefined,'public profile lookups must not expose account email addresses');
+
     const setOffline=await request(port,'/presence',{method:'PATCH',cookie:aliceCookie,body:{presence:'offline'}});
     assert.equal(setOffline.response.status,200);
     const offlineHeartbeat=await request(port,'/presence/heartbeat',{method:'POST',cookie:aliceCookie,body:{}});

@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { Server as SocketServer } from 'socket.io';
 import { db, PERMISSIONS } from './db.js';
+import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled } from './storage.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -141,7 +142,15 @@ function emitFriendUpdate(...userIds: string[]) {
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
 const interactionLimiter = rateLimit({ windowMs: 60 * 1000, limit: 45, standardHeaders: 'draft-7', legacyHeaders: false });
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'relay-api', time: now() }));
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'relay-api', time: now(), persistentStorage: persistentStorageEnabled }));
+app.get('/api/voice/ice-servers', requireAuth, (_req,res) => {
+  let configured:any[]=[];
+  try { configured=JSON.parse(process.env.RELAY_ICE_SERVERS||'[]'); } catch { return fail(res,500,'Voice relay configuration is invalid.'); }
+  if(!Array.isArray(configured))return fail(res,500,'Voice relay configuration must be a JSON array.');
+  const iceServers=configured.length?configured:[{urls:'stun:stun.l.google.com:19302'}];
+  res.setHeader('Cache-Control','private, no-store');
+  res.json({iceServers});
+});
 
 app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
   const schema = z.object({ email: z.string().email().max(254), username: z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().min(10).max(128) });
@@ -186,7 +195,38 @@ app.get('/api/auth/me', requireAuth, (req: AuthedRequest,res) => {
   const row = db.prepare('SELECT * FROM users WHERE id=?').get(req.user!.id) as any;
   res.json({user:{...userPublic(row),email:row.email}});
 });
-app.post('/api/auth/forgot-password', authLimiter, (_req,res) => res.status(501).json({error:'Password reset email is not configured. No email has been sent. Contact the local administrator to reset this development account.'}));
+app.post('/api/auth/forgot-password', authLimiter, asyncRoute(async (req,res) => {
+  const parsed=z.object({email:z.string().email().max(254)}).safeParse(req.body);
+  if(!parsed.success)return fail(res,400,'Enter the email address on your Relay account.');
+  const apiKey=process.env.RESEND_API_KEY, from=process.env.RELAY_EMAIL_FROM;
+  if(!apiKey||!from)return fail(res,503,'Password recovery is not configured yet. The administrator must add RESEND_API_KEY and RELAY_EMAIL_FROM.');
+  const user=db.prepare('SELECT id,email FROM users WHERE LOWER(email)=LOWER(?)').get(parsed.data.email) as any;
+  if(user){
+    const token=crypto.randomBytes(32).toString('base64url');
+    db.prepare('INSERT INTO password_reset_tokens(id,user_id,token_hash,expires_at) VALUES(?,?,?,?)')
+      .run(id(),user.id,sha(token),new Date(Date.now()+30*60*1000).toISOString());
+    const resetUrl=`${(process.env.CLIENT_ORIGIN||origin).replace(/\/$/,'')}/reset-password?token=${encodeURIComponent(token)}`;
+    const sent=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({from,to:[user.email],subject:'Reset your Relay password',html:`<p>We received a request to reset your Relay password.</p><p><a href="${resetUrl}">Choose a new password</a></p><p>This link expires in 30 minutes. If you did not request this, you can ignore this email.</p>`})});
+    if(!sent.ok){console.error('Relay password reset email failed:',sent.status,await sent.text());return fail(res,502,'Relay could not send the reset email. Try again later.');}
+  }
+  res.json({ok:true,message:'If that email belongs to a Relay account, a reset link is on its way.'});
+}));
+app.post('/api/auth/reset-password', authLimiter, asyncRoute(async (req,res) => {
+  const p=z.object({token:z.string().min(20).max(200),password:z.string().min(10).max(128)}).safeParse(req.body);
+  if(!p.success)return fail(res,400,'Use a valid reset link and a password of at least 10 characters.');
+  const reset=db.prepare('SELECT id,user_id FROM password_reset_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>NOW()').get(sha(p.data.token)) as any;
+  if(!reset)return fail(res,400,'This password reset link is invalid or has expired.');
+  const passwordHash=await bcrypt.hash(p.data.password,12);
+  const revoked=db.prepare('SELECT id FROM sessions WHERE user_id=?').all(reset.user_id) as any[];
+  const tx=db.transaction(()=>{
+    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(passwordHash,reset.user_id);
+    db.prepare('UPDATE password_reset_tokens SET used_at=NOW() WHERE id=?').run(reset.id);
+    db.prepare('DELETE FROM password_reset_tokens WHERE user_id=? AND id<>?').run(reset.user_id,reset.id);
+    db.prepare('DELETE FROM sessions WHERE user_id=?').run(reset.user_id);
+  });
+  tx();revoked.forEach(session=>disconnectSessionSockets(session.id));
+  res.json({ok:true});
+}));
 
 app.get('/api/profile/:userId', requireAuth, (req: AuthedRequest,res) => {
   const row = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.userId) as any;
@@ -700,7 +740,7 @@ function cleanupExpiredStagedUploads() {
   const remove=db.transaction((rows:any[])=>{
     for(const row of rows){
       const storageName=String(row.storage_name||'');
-      if(storageName && path.basename(storageName)===storageName)fs.rmSync(path.join(uploadDir,storageName),{force:true});
+      if(storageName && path.basename(storageName)===storageName)void deleteUpload(storageName).catch(error=>console.error('Expired upload cleanup failed.',error));
       db.prepare('DELETE FROM staged_uploads WHERE id=?').run(row.id);
     }
   });
@@ -714,28 +754,35 @@ function userStoredUploadBytes(userId:string) {
 cleanupExpiredStagedUploads();
 const stagedUploadCleanupTimer=setInterval(()=>{try{cleanupExpiredStagedUploads();}catch(error){console.error('Staged upload cleanup failed.',error);}},60*60*1000);
 stagedUploadCleanupTimer.unref();
-const storage=multer.diskStorage({destination:(_req,_file,cb)=>cb(null,uploadDir),filename:(_req,_file,cb)=>cb(null,crypto.randomBytes(18).toString('hex'))});
-const upload=multer({storage,limits:{fileSize:maxUpload,files:8},fileFilter:(_req,file,cb)=>{const ext=path.extname(file.originalname).toLowerCase();const ok=allowedMime.has(file.mimetype)&&!['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1'].includes(ext);const finish=cb as ((error: Error)=>void)&((error: null,acceptFile: boolean)=>void);if(ok) finish(null,true); else finish(new Error('This file type is not allowed.'));}});
-app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8), (req: AuthedRequest,res) => {
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:maxUpload,files:8},fileFilter:(_req,file,cb)=>{const ext=path.extname(file.originalname).toLowerCase();const ok=allowedMime.has(file.mimetype)&&!['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1'].includes(ext);const finish=cb as ((error: Error)=>void)&((error: null,acceptFile: boolean)=>void);if(ok)finish(null,true);else finish(new Error('This file type is not allowed.'));}});
+app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8), asyncRoute(async (req:AuthedRequest,res) => {
   const files=(req.files||[]) as Express.Multer.File[];
   cleanupExpiredStagedUploads();
   const incomingBytes=files.reduce((total,file)=>total+file.size,0);
-  if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes){
-    files.forEach(file=>fs.rmSync(file.path,{force:true}));
-    return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
+  if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes)return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
+  const saved:any[]=[];
+  try {
+    for(const file of files){
+      const key=await storeUpload(file.buffer,file.mimetype),uid=id();
+      db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)')
+        .run(uid,req.user!.id,path.basename(file.originalname).slice(0,180),file.mimetype,file.size,key);
+      saved.push({id:uid,filename:path.basename(file.originalname),mime:file.mimetype,size:file.size,url:`/api/uploads/${uid}`});
+    }
+  } catch(error) {
+    for(const item of saved){const row=db.prepare('SELECT storage_name FROM staged_uploads WHERE id=?').get(item.id) as any;if(row){void deleteUpload(row.storage_name).catch(()=>{});db.prepare('DELETE FROM staged_uploads WHERE id=?').run(item.id);}}
+    throw error;
   }
-  const saved=files.map(f=>{const uid=id();db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)').run(uid,req.user!.id,path.basename(f.originalname).slice(0,180),f.mimetype,f.size,f.filename);return {id:uid,filename:path.basename(f.originalname),mime:f.mimetype,size:f.size,url:`/api/uploads/${uid}`};});
-  res.status(201).json({uploads:saved,limitBytes:maxUpload,storageLimitBytes:maxUserStorageBytes});
-});
-app.get('/api/uploads/:uploadId', requireAuth, (req: AuthedRequest,res) => {
+  res.status(201).json({uploads:saved,limitBytes:maxUpload,storageLimitBytes:maxUserStorageBytes,persistent:persistentStorageEnabled});
+}));
+app.get('/api/uploads/:uploadId', requireAuth, asyncRoute(async (req: AuthedRequest,res) => {
   const row=db.prepare(`SELECT a.filename,a.mime,a.storage_name,m.sender_id,m.channel_id,m.dm_id,s.user_id AS staged_owner,c.server_id
     FROM attachments a LEFT JOIN messages m ON m.id=a.message_id LEFT JOIN channels c ON c.id=m.channel_id LEFT JOIN staged_uploads s ON s.id=a.id WHERE a.id=?
     UNION ALL SELECT filename,mime,storage_name,NULL,NULL,NULL,user_id,NULL FROM staged_uploads WHERE id=?`).get(req.params.uploadId,req.params.uploadId) as any;
   if(!row)return fail(res,404,'File not found.');
   const allowed=row.staged_owner===req.user!.id || row.sender_id===req.user!.id || (row.channel_id&&canReadChannel(row.channel_id,req.user!.id)) || (row.dm_id&&canAccessDm(row.dm_id,req.user!.id));
-  if(!allowed)return fail(res,403,'You cannot access this file.'); const file=path.join(uploadDir,row.storage_name); if(!fs.existsSync(file))return fail(res,404,'File storage is unavailable.');
-  res.setHeader('Content-Type',row.mime); res.setHeader('Content-Disposition',`inline; filename*=UTF-8''${encodeURIComponent(row.filename)}`); res.sendFile(file);
-});
+  if(!allowed)return fail(res,403,'You cannot access this file.');
+  try{const bytes=await readUpload(row.storage_name);res.setHeader('Content-Type',row.mime);res.setHeader('Content-Length',bytes.length);res.setHeader('Content-Disposition',`inline; filename*=UTF-8''${encodeURIComponent(row.filename)}`);res.send(bytes);}catch{return fail(res,404,'File storage is unavailable.');}
+}));
 
 // Presence heartbeat and authorized Socket.IO rooms.
 app.post('/api/presence/heartbeat', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE users SET last_seen=?,presence=CASE WHEN presence=\'offline\' THEN \'online\' ELSE presence END WHERE id=?').run(now(),req.user!.id);res.json({ok:true});});

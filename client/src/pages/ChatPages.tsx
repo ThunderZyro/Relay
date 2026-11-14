@@ -1,0 +1,177 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { io, Socket } from 'socket.io-client';
+import { ArrowLeft, Bell, Check, FilePlus2, Hash, MessageCircle, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X } from 'lucide-react';
+import { api, apiOrigin, post, patch, del } from '../api';
+import { useAuth, useToast } from '../state';
+import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
+
+type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[] };
+type RoomServer = { server:{id:string;name:string;description?:string}; channels:any[]; members:any[]; categories:any[] };
+
+function MessageList({ messages, loading=false, currentUserId, onReply, onEdit, onMore, onReact }: {
+ messages:ChatMessage[]; loading?:boolean; currentUserId?:string; onReply:(m:ChatMessage)=>void; onEdit:(m:ChatMessage)=>void; onMore:(m:ChatMessage)=>void; onReact:(m:ChatMessage,emoji:string)=>void;
+}) {
+ const bottomRef=useRef<HTMLDivElement>(null);
+ useEffect(()=>{bottomRef.current?.scrollIntoView({block:'end',behavior:'auto'});},[messages.length,loading]);
+ return <div className="message-list">{loading?<div className="chat-empty" role="status"><h3>Loading messages…</h3><p>Connecting to this conversation.</p></div>:messages.length===0?<div className="chat-empty"><h3>This is the beginning.</h3><p>Send the first message and get the conversation moving.</p></div>:messages.map((m,i)=>{
+  const previous=i>0?messages[i-1]:null;
+  const grouped=!!previous&&previous.sender_id===m.sender_id&&new Date(m.created_at).getTime()-new Date(previous.created_at).getTime()<5*60*1000;
+  const own=m.sender_id===currentUserId;
+  return <article className={`message ${grouped?'grouped':''}`} key={m.id}>
+   {!grouped?<Avatar name={m.username} src={m.avatar} size="md"/>:<span className="message-gutter"/>}
+   <div className="message-body">
+    {!grouped&&<div className="message-meta"><b>{m.username}</b><time>{new Date(m.created_at).toLocaleString()}</time>{m.edited_at&&<small>(edited)</small>}{m.pinned? <span className="pinned-mark"><Pin size={10}/> Pinned</span>:null}</div>}
+    {m.reply_to&&<div className="reply-quote"><Reply size={11}/> Reply</div>}
+    <p className="message-content">{m.content}</p>
+    {m.attachments?.map(a=><a className="attachment" key={a.id} href={`${apiOrigin}/api/uploads/${a.id}`} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>)}
+    {!!m.reactions?.length&&<div className="reactions">{m.reactions.map((r,i)=><button key={`${r.emoji}-${i}`} onClick={()=>onReact(m,r.emoji)}>{r.emoji}</button>)}</div>}
+   </div>
+   <div className="message-tools">
+    <button title="Reply" aria-label="Reply to message" onClick={()=>onReply(m)}><Reply size={14}/></button>
+    <button title="React" aria-label="React to message" onClick={()=>onReact(m,'👍')}><Smile size={14}/></button>
+    {own&&<button title="Edit" aria-label="Edit message" onClick={()=>onEdit(m)}><Edit3 size={14}/></button>}
+    <button title="Message actions" aria-label="More message actions" onClick={()=>onMore(m)}><MoreHorizontal size={14}/></button>
+   </div>
+  </article>;
+ })}<div ref={bottomRef}/></div>;
+}
+
+function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply }: { conversationId:string; isDm:boolean; socket:Socket|null; onSent:(m:ChatMessage)=>void; reply:ChatMessage|null; clearReply:()=>void }) {
+ const [content,setContent]=useState('');const [busy,setBusy]=useState(false);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
+ const send=async(e?:React.FormEvent)=>{e?.preventDefault();socket?.emit('typing:stop',typingTarget);if((!content.trim()&&!files.length)||busy)return;setBusy(true);try{
+  let uploadIds:string[]=[];
+  if(files.length){const form=new FormData();files.forEach(f=>form.append('files',f));const uploaded=await post<{uploads:{id:string}[]}>('/uploads',form);uploadIds=uploaded.uploads.map(u=>u.id);}
+  const route=isDm?`/dms/${conversationId}/messages`:`/channels/${conversationId}/messages`;
+  const result=await post<{message:ChatMessage}>(route,{content:content.trim(),reply_to:reply?.id,uploadIds});onSent(result.message);setContent('');if(textareaRef.current)textareaRef.current.style.height='auto';setFiles([]);clearReply();
+ }catch(err:any){toast.show(err.message,'error');}finally{setBusy(false);}};
+ return <div className="composer-wrap">
+  {reply&&<div className="reply-banner"><Reply size={13}/> Replying to {reply.username}: {reply.content.slice(0,90)}<button onClick={clearReply} aria-label="Cancel reply"><X size={13}/></button></div>}
+  {files.length>0&&<div className="file-chips">{files.map((f,i)=><span key={`${f.name}-${i}`}>{f.name}<button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}><X size={12}/></button></span>)}</div>}
+  <form className="composer" onSubmit={send}>
+   <input ref={fileRef} type="file" multiple hidden onChange={e=>{setFiles(v=>[...v,...Array.from(e.target.files||[])].slice(0,8));e.currentTarget.value='';}}/>
+   <button className="composer-icon" type="button" title="Attach file" onClick={()=>fileRef.current?.click()}><Paperclip size={18}/></button>
+   <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message…" maxLength={4000}/>
+   <button className="composer-send" type="submit" disabled={busy||(!content.trim()&&!files.length)} title="Send"><Send size={16}/></button>
+  </form><div className="composer-foot"><span>Enter to send · Shift+Enter for a new line</span><span>{content.length}/4000</span></div>
+ </div>;
+}
+
+function useRoomMessages(id:string|undefined,isDm:boolean){
+ const [messages,setMessages]=useState<ChatMessage[]>([]);const [loading,setLoading]=useState(true);const [socket,setSocket]=useState<Socket|null>(null);const [typing,setTyping]=useState('');const toast=useToast();const typingTimer=useRef<number|undefined>(undefined);
+ const load=async()=>{if(!id){setMessages([]);setLoading(false);return;}setLoading(true);try{const route=isDm?`/dms/${id}/messages`:`/channels/${id}/messages`;const r=await api<{messages:ChatMessage[]}>(route);setMessages(r.messages||[]);}catch(e:any){toast.show(e.message,'error');setMessages([]);}finally{setLoading(false);}};
+ useEffect(()=>{void load();},[id,isDm]);
+ useEffect(()=>{if(!id){setSocket(null);return;}const live:Socket=io(apiOrigin,{withCredentials:true});setSocket(live);const event=isDm?'room:join-dm':'room:join-channel';live.on('connect',()=>live.emit(event,id));live.on('message:new',(m:ChatMessage)=>setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m]));live.on('message:updated',(m:ChatMessage)=>setMessages(v=>v.map(x=>x.id===m.id?m:x)));live.on('message:deleted',(m:{id:string})=>setMessages(v=>v.filter(x=>x.id!==m.id)));live.on('message:reactions',(r:{messageId:string;reactions:ChatMessage['reactions']})=>setMessages(v=>v.map(x=>x.id===r.messageId?{...x,reactions:r.reactions}:x)));live.on('typing',(t:any)=>{if(typingTimer.current)window.clearTimeout(typingTimer.current);setTyping(t.active?`${t.username} is typing…`: '');if(t.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);});return()=>{live.disconnect();if(typingTimer.current)window.clearTimeout(typingTimer.current);setSocket(current=>current===live?null:current);setTyping('');};},[id,isDm]);
+ const add=(message:ChatMessage)=>setMessages(v=>v.some(m=>m.id===message.id)?v:[...v,message]);
+ return {messages,setMessages,loading,typing,socket,add,reload:load};
+}
+
+function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
+ const toast=useToast();const {user}=useAuth();
+ return <Modal title="Message actions" onClose={onClose}><div className="form-stack">
+  <Button variant="secondary" onClick={async()=>{try{await post(`/messages/${message.id}/reactions`,{emoji:'👍'});toast.show('Reaction added.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Add 👍 reaction</Button>
+  {!isDm&&<Button variant="secondary" onClick={async()=>{try{const r=await post<{pinned:boolean}>(`/messages/${message.id}/pin`);toast.show(r.pinned?'Message pinned.':'Message unpinned.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Pin or unpin</Button>}
+  {!isDm&&<Button variant="secondary" onClick={async()=>{const reason=window.prompt('Why are you reporting this message?');if(!reason)return;try{await post(`/messages/${message.id}/report`,{reason});toast.show('Report submitted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Report message</Button>}
+  {message.sender_id===user?.id&&<Button variant="danger" onClick={async()=>{if(!window.confirm('Delete this message?'))return;try{await del(`/messages/${message.id}`);toast.show('Message deleted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Delete message</Button>}
+ </div></Modal>;
+}
+
+export function ChannelPage(){
+ const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);
+ useEffect(()=>{if(!serverId)return;api<RoomServer>(`/servers/${serverId}`).then(r=>{setRoom(r);const target=channelId||r.channels.find(c=>c.type!=='voice')?.id||r.channels[0]?.id;if(target){setSelected(target);if(!channelId)navigate(`/channels/${serverId}/${target}`,{replace:true});}}).catch(e=>toast.show(e.message,'error'));},[serverId]);
+ useEffect(()=>{setSelected(channelId);setReply(null);},[channelId]);
+ const channel=room?.channels.find(c=>c.id===selected);const chat=useRoomMessages(channel?.id,false);
+ const typing=chat.typing;
+ const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
+ if(!serverId)return <Loading/>;if(!room)return <Loading label="Loading server"/>;
+ if(!channel)return <div className="page-content"><EmptyState title="No channel selected" description="Create a channel in server settings or choose another server." action={<Link to={`/server/${serverId}/settings/overview`}>Server settings</Link>}/></div>;
+ if(channel.type==='voice')return <div className="page-content voice-page"><div className="voice-card"><Volume2 size={32}/><h1>{channel.name}</h1><p>Voice uses peer-to-peer audio. Some networks require a TURN relay, which is not configured on this server.</p><VoiceJoin channelId={channel.id}/><div className="voice-controls"><Button variant="secondary" onClick={()=>setMembersOpen(v=>!v)}><Users size={15}/> {room.members.length} members</Button><Button variant="secondary" onClick={()=>navigate(`/server/${serverId}/settings/overview`)}>Channel settings</Button></div>{membersOpen&&<div className="voice-member-list">{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name||'Member'}</small></div>)}</div>}</div></div>;
+ return <div className="chat-page">
+  <div className="chat-heading"><div><h2><span>#</span>{channel.name}</h2><p>{channel.topic||room.server.description||'Conversation starts here.'}</p></div><div className="chat-head-actions"><button className="icon-btn" onClick={()=>setMembersOpen(v=>!v)} title="Toggle members"><Users size={17}/></button><Link className="icon-btn" to={`/server/${serverId}/settings/overview`} title="Server settings"><MoreHorizontal size={18}/></Link></div></div>
+  <div className="chat-main"><div className="chat-scroll"><MessageList messages={chat.messages} loading={chat.loading} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>
+  {membersOpen&&<aside className="member-panel"><div className="section-label">MEMBERS · {room.members.length}</div>{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+  {typing&&<div className="typing-note">{typing}</div>}
+  <ChatComposer conversationId={channel.id} isDm={false} socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
+  {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}
+  {actionMessage&&<MessageActions message={actionMessage} isDm={false} onClose={()=>setActionMessage(null)}/>}
+ </div>;
+}
+
+type VoiceSignal = {type:'offer'|'answer';sdp:RTCSessionDescriptionInit}|{type:'candidate';candidate:RTCIceCandidateInit};
+function VoiceJoin({channelId}:{channelId:string}){
+ const [joined,setJoined]=useState(false);const [joining,setJoining]=useState(false);const [muted,setMuted]=useState(false);const [deafened,setDeafened]=useState(false);const [peers,setPeers]=useState<any[]>([]);const [remoteStreams,setRemoteStreams]=useState<Record<string,MediaStream>>({});const toast=useToast();
+ const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());
+ const emitSignal=(peerId:string,payload:VoiceSignal)=>socketRef.current?.emit('webrtc:signal',{toSocketId:peerId,payload,channelId});
+ const createPeer=async(peerId:string,offerer:boolean):Promise<RTCPeerConnection>=>{
+  const existing=connectionsRef.current.get(peerId);if(existing)return existing;
+  const stream=localStreamRef.current;if(!stream)throw new Error('Microphone is not available.');
+  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});connectionsRef.current.set(peerId,pc);
+  stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+  pc.onicecandidate=event=>{if(event.candidate)emitSignal(peerId,{type:'candidate',candidate:event.candidate.toJSON()});};
+  pc.ontrack=event=>{const remote=event.streams?.[0]||new MediaStream([event.track]);setRemoteStreams(current=>({...current,[peerId]:remote}));};
+  pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed'){toast.show('A voice connection failed. This network may require a TURN relay.','error');}};
+  if(offerer){const offer=await pc.createOffer();await pc.setLocalDescription(offer);if(pc.localDescription)emitSignal(peerId,{type:'offer',sdp:pc.localDescription.toJSON()});}
+  return pc;
+ };
+ const receiveSignal=async(data:any)=>{
+  const peerId=String(data?.fromSocketId||'');const payload=data?.payload as VoiceSignal|undefined;if(!peerId||!payload)return;
+  const pc=await createPeer(peerId,false);
+  if(payload.type==='candidate'){
+   if(pc.remoteDescription)await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+   else pendingCandidatesRef.current.set(peerId,[...(pendingCandidatesRef.current.get(peerId)||[]),payload.candidate]);
+   return;
+  }
+  await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+  const queued=pendingCandidatesRef.current.get(peerId)||[];pendingCandidatesRef.current.delete(peerId);for(const candidate of queued)await pc.addIceCandidate(new RTCIceCandidate(candidate));
+  if(payload.type==='offer'){const answer=await pc.createAnswer();await pc.setLocalDescription(answer);if(pc.localDescription)emitSignal(peerId,{type:'answer',sdp:pc.localDescription.toJSON()});}
+ };
+ const removePeer=(peerId:string)=>{const pc=connectionsRef.current.get(peerId);pc?.close();connectionsRef.current.delete(peerId);pendingCandidatesRef.current.delete(peerId);setRemoteStreams(current=>{const next={...current};delete next[peerId];return next;});setPeers(current=>current.filter(peer=>peer.socketId!==peerId));};
+ const leave=()=>{
+  socketRef.current?.emit('voice:leave',channelId);socketRef.current?.disconnect();socketRef.current=null;
+  for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();
+  localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
+  setRemoteStreams({});setPeers([]);setJoined(false);setMuted(false);setDeafened(false);
+ };
+ const join=async()=>{
+  setJoining(true);
+  try{
+   if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microphone access requires HTTPS or localhost and a supported browser.');
+   const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});localStreamRef.current=stream;
+   const live=io(apiOrigin,{withCredentials:true});socketRef.current=live;
+   live.on('connect',()=>live.emit('voice:join',{channelId},async(response:any)=>{
+    if(!response?.ok){toast.show(response?.error||'You cannot join this voice channel.','error');leave();setJoining(false);return;}
+    const participants=response.participants||[];setPeers(participants);setJoined(true);setJoining(false);
+    for(const participant of participants){try{await createPeer(participant.socketId,true);}catch(error:any){toast.show(error.message||'Could not establish a voice connection.','error');}}
+   }));
+   live.on('voice:participant',(participant:any)=>{
+    if(participant.state==='left'){removePeer(participant.socketId);return;}
+    setPeers(current=>[...current.filter(peer=>peer.socketId!==participant.socketId),participant]);
+    void createPeer(participant.socketId,false).catch((error:any)=>toast.show(error.message||'Could not connect to a participant.','error'));
+   });
+   live.on('webrtc:signal',(data:any)=>void receiveSignal(data).catch((error:any)=>toast.show(error.message||'Voice signaling failed.','error')));
+   live.on('connect_error',()=>{toast.show('Voice connection failed. Check your server and network.','error');leave();setJoining(false);});
+  }catch(error:any){localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;toast.show(error.name==='NotAllowedError'?'Microphone permission was denied.':error.message||'Could not access the microphone.','error');setJoining(false);}
+ };
+ const setAudioState=(nextMuted:boolean,nextDeafened:boolean)=>{setMuted(nextMuted);setDeafened(nextDeafened);localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!nextMuted;});socketRef.current?.emit('voice:state',{channelId,muted:nextMuted,deafened:nextDeafened});};
+ useEffect(()=>{localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!muted;});},[muted]);
+ useEffect(()=>()=>{socketRef.current?.disconnect();localStreamRef.current?.getTracks().forEach(track=>track.stop());for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();},[]);
+ return <div className="voice-join">
+  <Button onClick={()=>joined?leave():void join()} disabled={joining}>{joining?'Connecting…':joined?'Leave voice':'Join voice'}</Button>
+  {joined&&<><Button variant="secondary" onClick={()=>setAudioState(!muted,deafened)}>{muted?<VolumeX size={15}/>:<Volume2 size={15}/>} {muted?'Unmute':'Mute'}</Button><Button variant="secondary" onClick={()=>setAudioState(muted,!deafened)}>{deafened?'Enable audio':'Deafen'}</Button><p>{peers.length+1} participant(s) · peer-to-peer audio</p><div className="voice-audio" aria-label="Remote participant audio">{Object.entries(remoteStreams).map(([peerId,stream])=><audio key={peerId} autoPlay playsInline muted={deafened} ref={element=>{if(element&&element.srcObject!==stream){element.srcObject=stream;void element.play().catch(()=>{});}}}/>)}</div></>}
+ </div>;
+}
+
+export function DmPage(){
+ const {conversationId}=useParams();const {user}=useAuth();const toast=useToast();const navigate=useNavigate();const [conversations,setConversations]=useState<any[]>([]);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);
+ useEffect(()=>{api<any>('/dms').then(r=>setConversations(r.conversations||[])).catch((e:any)=>toast.show(e.message,'error'));},[]);
+ const dm=conversations.find(d=>d.id===conversationId);const others=dm?.members?.filter((m:any)=>m.id!==user?.id)||[];const title=dm?.name||others.map((m:any)=>m.username).join(', ')||'Direct messages';const chat=useRoomMessages(conversationId,true);
+ const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
+ if(!conversationId)return <div className="page-content"><EmptyState title="Your messages" description="Choose a conversation from the sidebar, or start one from your Friends list."/></div>;
+ return <div className="chat-page"><div className="chat-heading"><div className="dm-title-line">{others.slice(0,3).map((m:any)=><Avatar key={m.id} name={m.username} src={m.avatar} size="md" presence={m.presence}/>)}<div><h2>{title}</h2><p>{dm?.is_group?'Group conversation':others.map((m:any)=>m.presence).join(', ')||'Direct message'}</p></div></div><div className="chat-head-actions"><button className="icon-btn" onClick={()=>setMembersOpen(v=>!v)} title="Conversation members"><Users size={17}/></button></div></div>
+ <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={chat.messages} loading={chat.loading} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">MEMBERS · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+ {chat.typing&&<div className="typing-note">{chat.typing}</div>}
+ <ChatComposer conversationId={conversationId} isDm socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
+ {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}
+ {actionMessage&&<MessageActions message={actionMessage} isDm onClose={()=>setActionMessage(null)}/>}
+ </div>;
+}

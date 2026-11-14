@@ -681,7 +681,7 @@ app.post('/api/invites/:code/join', requireAuth, (req: AuthedRequest,res) => {
     if(db.prepare('SELECT 1 FROM bans WHERE server_id=? AND user_id=?').get(row.server_id,req.user!.id))return {error:'banned'} as const;
     const alreadyMember=!!membership(row.server_id,req.user!.id);
     if(!alreadyMember){
-      const claimed=db.prepare('UPDATE invites SET uses=uses+1 WHERE code=? AND revoked=0 AND (max_uses IS NULL OR uses<max_uses) AND (expires_at IS NULL OR expires_at>NOW())').run(row.code);
+      const claimed=db.prepare('UPDATE invites SET uses=uses+1 WHERE code=? AND revoked=0 AND (max_uses IS NULL OR uses<max_uses) AND (expires_at IS NULL OR expires_at::timestamptz>NOW())').run(row.code);
       if(!claimed.changes)return {error:'invalid'} as const;
       const role=db.prepare('SELECT id FROM roles WHERE server_id=? ORDER BY position ASC LIMIT 1').get(row.server_id) as any;
       db.prepare('INSERT INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?)').run(id(),row.server_id,req.user!.id,role?.id||null);

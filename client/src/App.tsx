@@ -1,6 +1,6 @@
 import React,{useState} from 'react';
 import {Navigate,Route,Routes,Link,useNavigate} from 'react-router-dom';
-import {ArrowLeft,ArrowRight,AtSign,LockKeyhole,Mail,MessageSquare,ShieldCheck,Sparkles,UserPlus,Users} from 'lucide-react';
+import {ArrowRight,AtSign,LockKeyhole} from 'lucide-react';
 import {AuthProvider,useAuth,ToastProvider,useToast,announceAuthChange} from './state';
 import {post} from './api';
 import Shell from './components/Shell';
@@ -46,43 +46,25 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
  };
 
  return <main className="auth-screen">
-  <div className="auth-layout">
-   <section className="auth-showcase">
-    <Link to="/login" className="auth-brand" aria-label="Relay home">
-     <span className="brand-mark">R</span><span>relay</span>
-    </Link>
-    <div className="auth-showcase-content">
-     <div className="auth-kicker"><i/> A better place to connect</div>
-     <h1>Your people.<br/><em>Your space.</em></h1>
-     <p>Bring your communities, conversations, and everyday moments together in one space that feels like yours.</p>
-     <div className="auth-features">
-      <div className="auth-feature"><span><MessageSquare size={16}/></span> Conversations that stay in sync</div>
-      <div className="auth-feature"><span><Users size={16}/></span> Communities built around your people</div>
-      <div className="auth-feature"><span><ShieldCheck size={16}/></span> Tools that put your community in control</div>
-     </div>
-    </div>
-    <div className="auth-showcase-footer"><Sparkles size={13}/> Made for the moments worth sharing.</div>
-   </section>
+  <div className="auth-simple">
+   <Link to="/login" className="auth-brand" aria-label="Relay home">
+    <span className="brand-mark">R</span><span>relay</span>
+   </Link>
+   <h1 className="auth-tagline">Your people. Your space.</h1>
 
    <section className="auth-form-side">
     <div className="auth-form-top">
-     {isRegister?'Already part of Relay?':isForgot?'Remember your password?':'New to Relay?'}
-     <Link to={isRegister||isForgot?'/login':'/register'}>{isRegister||isForgot?'Sign in':'Create an account'}</Link>
+     {isRegister ? 'Already part of Relay?' : isForgot ? 'Remember your password?' : 'New to Relay?'}
+     <Link to={isRegister || isForgot ? '/login' : '/register'}>{isRegister || isForgot ? 'Sign in' : 'Create an account'}</Link>
     </div>
 
     <div className="auth-card">
-     <div className="auth-icon">{isForgot?<Mail size={21}/>:isRegister?<UserPlus size={21}/>:<LockKeyhole size={21}/>}</div>
      <div className="auth-form-heading">
-      <small>{isForgot?'ACCOUNT RECOVERY':isRegister?'GET STARTED':'MEMBER ACCESS'}</small>
-      <h1>{isForgot?'Password reset':isRegister?'Create your account':'Welcome back'}</h1>
-      <p>{isForgot
-       ? 'Password-reset email is not configured on this server, so Relay cannot send a reset link. Contact your server administrator for account recovery.'
-       : isRegister
-        ? 'Set up your account and find your people on Relay.'
-        : 'Sign in to pick up right where your community left off.'}</p>
+      <h1>{isForgot ? 'Password reset' : isRegister ? 'Create your account' : 'Welcome back'}</h1>
+      {isForgot && <p>Password-reset email is not configured on this server. Contact your server administrator for account recovery.</p>}
      </div>
 
-     {!isForgot&&<form onSubmit={submit} className="form-stack">
+     {!isForgot && <form onSubmit={submit} className="form-stack">
       {isRegister
        ? <>
           <Field label="Email address">
@@ -98,22 +80,13 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
       <Field label="Password">
        <div className="auth-input-wrap"><LockKeyhole size={15}/><input value={password} onChange={e=>setPassword(e.target.value)} type="password" autoComplete={isRegister?'new-password':'current-password'} minLength={isRegister?10:1} maxLength={128} required placeholder={isRegister?'At least 10 characters':'Your password'}/></div>
       </Field>
-      {error&&<div className="form-error" role="alert">{error}</div>}
+      {error && <div className="form-error" role="alert">{error}</div>}
       <Button type="submit" disabled={busy}>{busy?'Please wait…':isRegister?'Create account':'Sign in'} <ArrowRight size={16}/></Button>
      </form>}
 
-     <div className="auth-bottom">
-      {isForgot
-       ? <Link to="/login"><ArrowLeft size={13}/> Back to sign in</Link>
-       : isRegister
-        ? <>Already registered? <Link to="/login">Sign in instead</Link></>
-        : <><Link to="/forgot-password">Forgot password?</Link><span className="auth-bottom-note">Protected sign-in</span></>}
-     </div>
-    </div>
-
-    <div className="auth-footer">
-     <span>Relay is an original community app and is not affiliated with Discord.</span>
-     <span className="auth-footer-left">By continuing, you agree to use Relay respectfully and keep your account secure.</span>
+     {!isRegister && !isForgot && <div className="auth-bottom">
+      <Link to="/forgot-password">Forgot password?</Link>
+     </div>}
     </div>
    </section>
   </div>

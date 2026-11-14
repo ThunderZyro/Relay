@@ -14,7 +14,9 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { Server as SocketServer } from 'socket.io';
-import { db, PERMISSIONS } from './db.js';
+import { createAdapter } from '@socket.io/postgres-adapter';
+import { Pool } from 'pg';
+import { databaseUrl, db, PERMISSIONS } from './db.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled } from './storage.js';
 
 const app = express();
@@ -72,6 +74,27 @@ app.use('/api', (req, res, next) => {
   return next();
 });
 
+function directRealtimeConnectionString() {
+  const configured=process.env.RELAY_REALTIME_DATABASE_URL?.trim();
+  if(configured)return configured;
+  try {
+    const parsed=new URL(databaseUrl);
+    if(parsed.hostname.endsWith('.neon.tech')) {
+      parsed.hostname=parsed.hostname.replace(/-pooler(?=\\.)/,'');
+    }
+    return parsed.toString();
+  } catch {
+    return databaseUrl;
+  }
+}
+const realtimePool=new Pool({
+  connectionString:directRealtimeConnectionString(),
+  max:2,
+  connectionTimeoutMillis:10_000,
+  idleTimeoutMillis:10_000,
+  keepAlive:true
+});
+realtimePool.on('error',error=>console.error('Relay realtime database connection error:',error.message));
 const io = new SocketServer(server, {
   cors: { origin: (requestOrigin, callback) => callback(null, isAllowedOrigin(requestOrigin)), credentials: true },
   allowRequest: (request, callback) => {
@@ -80,6 +103,7 @@ const io = new SocketServer(server, {
   },
   maxHttpBufferSize: 1e6
 });
+io.adapter(createAdapter(realtimePool,{tableName:'socket_io_attachments'}));
 function disconnectSessionSockets(sessionId: string) {
   io.in(`session:${sessionId}`).disconnectSockets(true);
 }
@@ -878,7 +902,9 @@ const stagedUploadCleanupTimer=setInterval(()=>{try{cleanupExpiredStagedUploads(
 stagedUploadCleanupTimer.unref();
 const shutdownRelay=()=>{
   clearInterval(stagedUploadCleanupTimer);
-  io.close();
+  io.close(()=>{
+    void realtimePool.end().catch(error=>console.error('Relay realtime pool shutdown failed:',error));
+  });
 };
 process.once('SIGTERM',shutdownRelay);
 process.once('SIGINT',shutdownRelay);
@@ -949,7 +975,24 @@ io.on('connection',(socket)=>{
   socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
   socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(data?.channelId||'') as any;const canTypeChannel=!!data?.channelId&&!!channel&&canReadChannel(data.channelId,user.id)&&!isTimedOut(channel.server_id,user.id);const room=canTypeChannel?`channel:${data!.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
   socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(data?.channelId||'') as any;const canTypeChannel=!!data?.channelId&&!!channel&&canReadChannel(data.channelId,user.id)&&!isTimedOut(channel.server_id,user.id);const room=canTypeChannel?`channel:${data!.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
-  socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,userId:s.data.user?.id,username:s.data.user?.username}:null;}).filter(Boolean)});});
+  socket.on('voice:join',async(data:{channelId:string},ack?:Function)=>{
+    if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}
+    const room=`voice:${data.channelId}`;
+    socket.join(room);
+    socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});
+    try {
+      const peers=await io.in(room).fetchSockets();
+      ack?.({ok:true,participants:peers.filter(peer=>peer.id!==socket.id).map(peer=>({
+        socketId:peer.id,
+        userId:(peer.data as any).user?.id,
+        username:(peer.data as any).user?.username
+      }))});
+    } catch(error) {
+      socket.leave(room);
+      ack?.({ok:false,error:'Relay could not load voice participants. Please reconnect.'});
+      console.error('Relay voice participant lookup failed:',error);
+    }
+  });
   socket.on('voice:leave',(channelId:string)=>{
     if(typeof channelId!=='string')return;
     const room=`voice:${channelId}`;
@@ -958,7 +1001,23 @@ io.on('connection',(socket)=>{
     socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
   });
   socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,...data});});
-  socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:{id:user.id,username:user.username},payload:data.payload,channelId:data.channelId});}});
+  socket.on('webrtc:signal',async(data:{toSocketId:string;payload:unknown;channelId:string})=>{
+    const room=`voice:${data?.channelId}`;
+    if(!canJoinVoiceChannel(data?.channelId,user.id)||!socket.rooms.has(room)||typeof data?.toSocketId!=='string')return;
+    try {
+      const targets=await io.in(data.toSocketId).fetchSockets();
+      if(targets.some(target=>target.rooms.has(room))) {
+        io.to(data.toSocketId).emit('webrtc:signal',{
+          fromSocketId:socket.id,
+          fromUser:{id:user.id,username:user.username},
+          payload:data.payload,
+          channelId:data.channelId
+        });
+      }
+    } catch(error) {
+      console.error('Relay voice signal delivery failed:',error);
+    }
+  });
   socket.on('disconnect',()=>{
     clearTimeout(sessionExpiryTimer);
     if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);

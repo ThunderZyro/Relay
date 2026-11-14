@@ -138,6 +138,7 @@ async function revokeServerMemberRooms(userId: string, channels: Array<{id:strin
     const voiceRoom = `voice:${channel.id}`;
     for (const socket of sockets) {
       if (channel.type === 'voice' && socket.rooms.has(voiceRoom)) {
+        socket.emit('voice:forced-leave',{channelId:channel.id,reason:'Your access to this server voice channel has ended.'});
         socket.leave(voiceRoom);
         const connectedUser = (socket.data as any).user;
         io.to(voiceRoom).emit('voice:participant', {
@@ -157,6 +158,7 @@ async function revokeChannelRooms(channel: {id:string;type:string}) {
     const sockets = await io.in(voiceRoom).fetchSockets();
     for (const socket of sockets) {
       const connectedUser = (socket.data as any).user;
+      socket.emit('voice:forced-leave',{channelId:channel.id,reason:'This voice channel is no longer available.'});
       socket.leave(voiceRoom);
       io.to(voiceRoom).emit('voice:participant', {
         userId: connectedUser?.id || '',

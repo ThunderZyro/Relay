@@ -31,14 +31,13 @@ function stop(child: ChildProcess): Promise<void> {
   });
 }
 
-function startApi(port: number, databaseFile: string, uploadDir: string): { child: ChildProcess; logs: () => string } {
+function startApi(port: number, uploadDir: string): { child: ChildProcess; logs: () => string } {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       NODE_ENV: 'test',
       PORT: String(port),
-      DATABASE_FILE: databaseFile,
       UPLOAD_DIR: uploadDir,
       SESSION_SECRET: 'relay-integration-test-secret-with-more-than-32-characters',
       CLIENT_ORIGIN: `http://127.0.0.1:${port + 1}`,
@@ -102,13 +101,12 @@ async function uploadTextFile(port:number,cookie:string,size:number) {
   });
 }
 
-test('validates accounts, bounds invites, enforces DM privacy and permissions, and preserves SQLite data', async () => {
+test('validates accounts, bounds invites, enforces DM privacy and permissions, and preserves PostgreSQL data', { skip: !process.env.DATABASE_URL }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-api-test-'));
   const port = await freePort();
-  const databaseFile = path.join(dir, 'relay.sqlite');
   const uploadDir = path.join(dir, 'uploads');
   fs.mkdirSync(uploadDir, { recursive: true });
-  let processOne = startApi(port, databaseFile, uploadDir);
+  let processOne = startApi(port, uploadDir);
   let processTwo: ReturnType<typeof startApi> | undefined;
 
   try {
@@ -323,7 +321,7 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(blockedDmRead.response.status, 403, 'blocks must prevent access to existing DMs');
 
     await stop(processOne.child);
-    processTwo = startApi(port, databaseFile, uploadDir);
+    processTwo = startApi(port, uploadDir);
     await waitForApi(port, processTwo.child, processTwo.logs);
 
     const restoredSession = await request<{ user: { username: string } }>(port, '/auth/me', { cookie: aliceCookie });

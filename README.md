@@ -52,11 +52,13 @@ The web client and API are npm workspaces: `client/` and `server/`.
    cd Relay
    ```
 
-2. Install the exact dependencies recorded in the lockfile:
+2. Install dependencies:
 
    ```bash
-   npm ci
+   npm install
    ```
+
+   The workspace manifests currently contain dependencies that are not yet recorded in the checked-in lockfile, so use `npm install` until the lockfile is regenerated and committed.
 
 3. Copy the example environment file.
 

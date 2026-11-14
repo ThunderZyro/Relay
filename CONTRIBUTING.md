@@ -14,8 +14,10 @@ Thanks for helping improve Relay. This guide describes the safest way to work on
 Relay requires Node.js 22+, npm 10+, and a PostgreSQL database.
 
 ```bash
-npm ci
+npm install
 cp .env.example .env
+
+The checked-in lockfile is currently behind the workspace manifests. `npm install` synchronizes it; commit the updated lockfile with dependency changes. Once it is synchronized, the project can switch local setup and CI to `npm ci`.
 npm run dev
 ```
 

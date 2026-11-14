@@ -55,8 +55,8 @@ jobs:
             throw ("The repository is missing required Relay source files: " + ($missing -join ', '))
           }
 
-      - name: Install locked dependencies
-        run: npm ci --no-audit --no-fund
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
 
       - name: Build and test Relay
         run: |

@@ -26,7 +26,7 @@ The GitHub connection used for this review did not expose the repository's Depen
 
 1. The desktop build-and-test job previously inherited `contents: write` even for pull requests. The workflow now gives the build job read-only permissions and moves release publishing into a separate job with write permission.
 2. The Docker ignore file previously excluded only the exact `.env` filename. It now excludes `.env.*` files and nested environment files too, preventing local environment files from entering a Docker build context.
-3. PostgreSQL CI now uses `npm ci`, read-only repository permissions, and only runs on pull requests and pushes to `main`.
+3. PostgreSQL CI uses npm install while the checked-in lockfile is being brought back into sync, with read-only repository permissions and only runs on pull requests and pushes to `main`.
 4. Dependabot and CodeQL workflows are added so dependency updates and static analysis run on a schedule.
 
 ## Follow-up hardening to consider

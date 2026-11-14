@@ -6,7 +6,7 @@ import { nanoid } from 'nanoid';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env') });
-const databaseUrl = process.env.VERCEL_ENV === 'preview' ? (process.env.DATABASE_URL_PREVIEW || process.env.DATABASE_URL) : process.env.DATABASE_URL;
+export const databaseUrl = process.env.VERCEL_ENV === 'preview' ? (process.env.DATABASE_URL_PREVIEW || process.env.DATABASE_URL) : process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required. Configure the Relay PostgreSQL connection before starting the API.');
 
 const isTypeScript = import.meta.url.endsWith('.ts');

@@ -1,0 +1,48 @@
+name: Build Relay Desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies on GitHub
+        run: npm install --no-audit --no-fund
+
+      - name: Build and test Relay
+        run: |
+          npm run build
+          npm test
+
+      - name: Prepare bundled local runtime
+        run: npm run desktop:prepare
+
+      - name: Build and publish Windows installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELAY_GITHUB_OWNER: ${{ github.repository_owner }}
+          RELAY_GITHUB_REPO: ${{ github.event.repository.name }}
+        run: npx electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish always
+
+      - name: Keep installer artifacts available
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-desktop-windows
+          path: release/desktop/*
+          if-no-files-found: ignore

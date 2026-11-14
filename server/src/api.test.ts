@@ -138,6 +138,15 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(aliceRegistration.response.status, 201);
     const aliceCookie = sessionCookie(aliceRegistration.response);
 
+    const setOffline=await request(port,'/presence',{method:'PATCH',cookie:aliceCookie,body:{presence:'offline'}});
+    assert.equal(setOffline.response.status,200);
+    const offlineHeartbeat=await request(port,'/presence/heartbeat',{method:'POST',cookie:aliceCookie,body:{}});
+    assert.equal(offlineHeartbeat.response.status,200);
+    const offlineMe=await request<{user:{presence:string}}>(port,'/auth/me',{cookie:aliceCookie});
+    assert.equal(offlineMe.data.user.presence,'offline','presence heartbeats must not override a user-selected offline status');
+    const restoreOnline=await request(port,'/presence',{method:'PATCH',cookie:aliceCookie,body:{presence:'online'}});
+    assert.equal(restoreOnline.response.status,200);
+
     const firstStagedUpload = await uploadTextFile(port,aliceCookie,700*1024);
     assert.equal(firstStagedUpload.status,201,'an upload under the user quota should be accepted');
     const firstUploadData=await firstStagedUpload.json() as {uploads:Array<{id:string}>};
@@ -352,6 +361,10 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(groupDm.response.status,201);
     const groupMessage=await request(port,`/dms/${groupDm.data.conversation.id}/messages`,{method:'POST',cookie:aliceCookie,body:{content:'Group messages remain available after a one-to-one block.'}});
     assert.equal(groupMessage.response.status,201);
+    const removeGroupMember=await request(port,`/dms/${groupDm.data.conversation.id}/members/${charlieRegistration.data.user.id}`,{method:'DELETE',cookie:aliceCookie});
+    assert.equal(removeGroupMember.response.status,200,'the group creator may remove a group member');
+    const removedGroupMemberAccess=await request(port,`/dms/${groupDm.data.conversation.id}/messages`,{cookie:charlieCookie});
+    assert.equal(removedGroupMemberAccess.response.status,403,'a removed group member must immediately lose access');
 
     const createdMessage = await request<{ message: { id: string; content: string } }>(port, `/channels/${serverResult.data.channelId}/messages`, {
       method: 'POST', cookie: aliceCookie, body: { content: 'Persistent hello from Alice.' }

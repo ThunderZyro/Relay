@@ -174,6 +174,22 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     const expiredUpload = await request(port, `/uploads/${firstUploadData.uploads[0].id}`, {cookie:aliceCookie});
     assert.equal(expiredUpload.response.status,404,'expired staged uploads must no longer be retrievable');
 
+    // Run the same account through two independent API processes. PostgreSQL
+    // must serialize their quota reservations even when their uploads overlap.
+    const concurrentPort=await freePort();
+    const concurrentProcess=startApi(concurrentPort,uploadDir);
+    try {
+      await waitForApi(concurrentPort,concurrentProcess.child,concurrentProcess.logs);
+      await delay(4200); // Let the previous 700 KB staged upload expire.
+      const concurrentUploads=await Promise.all([
+        uploadTextFile(port,aliceCookie,700*1024),
+        uploadTextFile(concurrentPort,aliceCookie,700*1024)
+      ]);
+      assert.equal(concurrentUploads.filter(result=>result.status===201).length,1,'only one overlapping upload may reserve the remaining user quota');
+      assert.equal(concurrentUploads.filter(result=>result.status===413).length,1,'the other overlapping upload must be rejected by the quota');
+    } finally {
+      await stop(concurrentProcess.child);
+    }
 
     const duplicateRegistration = await request(port, '/auth/register', {
       method: 'POST', body: { email: 'alice@example.test', username: 'alice_other', password: 'relay-test-password-010' }

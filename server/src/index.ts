@@ -17,7 +17,7 @@ import { Server as SocketServer } from 'socket.io';
 import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
-import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled } from './storage.js';
+import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -245,7 +245,19 @@ function emitFriendUpdate(...userIds: string[]) {
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
 const interactionLimiter = rateLimit({ windowMs: 60 * 1000, limit: 45, standardHeaders: 'draft-7', legacyHeaders: false });
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'relay-api', time: now(), persistentStorage: persistentStorageEnabled }));
+app.get('/api/health', (_req, res) => {
+  const productionStorageMissing = isProd ? missingStorageEnvironment : [];
+  const passwordRecoveryConfigured = !!(process.env.RESEND_API_KEY?.trim() && process.env.RELAY_EMAIL_FROM?.trim());
+  res.json({
+    status: isProd && !persistentStorageEnabled ? 'degraded' : 'ok',
+    service: 'relay-api',
+    time: now(),
+    persistentStorage: persistentStorageEnabled,
+    storageMode: persistentStorageEnabled ? 's3' : isProd ? 'unavailable' : 'local-disk',
+    missingStorageEnvironment: productionStorageMissing,
+    passwordRecoveryConfigured
+  });
+});
 app.get('/api/voice/ice-servers', requireAuth, (_req,res) => {
   let configured:any[]=[];
   try { configured=JSON.parse(process.env.RELAY_ICE_SERVERS||'[]'); } catch { return fail(res,500,'Voice relay configuration is invalid.'); }
@@ -940,7 +952,11 @@ const shutdownRelay=()=>{
 process.once('SIGTERM',shutdownRelay);
 process.once('SIGINT',shutdownRelay);
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:maxUpload,files:8},fileFilter:(_req,file,cb)=>{const ext=path.extname(file.originalname).toLowerCase();const ok=allowedMime.has(file.mimetype)&&!['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1'].includes(ext);const finish=cb as ((error: Error)=>void)&((error: null,acceptFile: boolean)=>void);if(ok)finish(null,true);else finish(new Error('This file type is not allowed.'));}});
-app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8), asyncRoute(async (req:AuthedRequest,res) => {
+const requirePersistentUploadStorage = (_req:Request,res:Response,next:NextFunction) =>
+  isProd && !persistentStorageEnabled
+    ? fail(res,503,'File uploads are temporarily unavailable because persistent object storage is not configured.')
+    : next();
+app.post('/api/uploads', requireAuth, interactionLimiter, requirePersistentUploadStorage, upload.array('files',8), asyncRoute(async (req:AuthedRequest,res) => {
   const files=(req.files||[]) as Express.Multer.File[];
   await cleanupExpiredStagedUploads();
   const incomingBytes=files.reduce((total,file)=>total+file.size,0);
@@ -973,7 +989,13 @@ app.get('/api/uploads/:uploadId', requireAuth, asyncRoute(async (req: AuthedRequ
 }));
 
 // Presence heartbeat and authorized Socket.IO rooms.
-app.post('/api/presence/heartbeat', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(),req.user!.id);res.json({ok:true});});
+const updatePresenceHeartbeat = (req:AuthedRequest,res:Response) => {
+  db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(),req.user!.id);
+  res.json({ok:true});
+};
+// Keep GET briefly for older Relay clients while current clients use POST.
+app.get('/api/presence/heartbeat', requireAuth, updatePresenceHeartbeat);
+app.post('/api/presence/heartbeat', requireAuth, updatePresenceHeartbeat);
 function socketUser(cookieHeader='') {
   const match=cookieHeader.match(/(?:^|;\s*)relay_session=([^;]+)/); if(!match)return null;
   let token='';try{token=decodeURIComponent(match[1]);}catch{return null;}

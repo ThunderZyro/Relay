@@ -1114,3 +1114,19 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .auth-input-wrap input:focus { outline: 0; }
 .auth-input-wrap svg { flex: none; }
 .auth-bottom-note { margin-left: auto; color: var(--muted); font-size: 9px; }
+
+
+/* Final interaction details */
+.presence-dot.online { background: #64d69a; }
+.presence-dot.idle { background: #e5b968; }
+.presence-dot.dnd { background: #ed777e; }
+.presence-dot.offline { background: #778b98; }
+.message { position: relative; }
+.message-tools { position: absolute; top: -9px; right: 10px; display: none; opacity: 0; transition: opacity .14s; }
+.message:hover .message-tools, .message:focus-within .message-tools { display: flex; opacity: 1; }
+.message-tools button { min-width: 29px; height: 29px; border-radius: 8px; }
+.attachment span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.attachment small { color: var(--muted); font-size: 9px; }
+.auth-form-heading { margin-bottom: 21px; }
+.auth-form-heading h1 { margin: 8px 0 9px; }
+.auth-bottom a { display: inline-flex; align-items: center; gap: 5px; }

@@ -1,78 +1,175 @@
 # Relay
 
-Relay brings direct messages, group chats, and community servers together in one shared online space.
+[![PostgreSQL integration](https://github.com/ThunderZyro/Relay/actions/workflows/postgres-integration.yml/badge.svg?branch=main)](https://github.com/ThunderZyro/Relay/actions/workflows/postgres-integration.yml)
+[![CodeQL](https://github.com/ThunderZyro/Relay/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/ThunderZyro/Relay/actions/workflows/codeql.yml)
 
-## How Relay is built
+**Relay brings direct messages, group conversations, and communities together in one shared space.**
 
-- **Web client:** React, TypeScript, and Vite.
-- **API:** Express and Socket.IO.
-- **Database:** PostgreSQL (Neon is supported and used by the hosted deployment).
-- **File storage:** local disk for development, or private S3-compatible storage for hosted deployments.
-- **Desktop:** Electron wrapper that opens the same hosted Relay service as the website. Desktop and web users share accounts, messages, servers, and uploads.
+[Open Relay](https://relay-platform-livid.vercel.app) · [Desktop app guide](README-DESKTOP.md) · [Latest desktop release](https://github.com/ThunderZyro/Relay/releases/latest)
 
-Relay requires a PostgreSQL database. The old local SQLite desktop setup has been retired.
+Relay is an independent messaging and community platform with a React web client, a PostgreSQL-backed API, realtime messaging, and a Windows desktop wrapper. The project is under active development.
+
+## What it includes
+
+- **Accounts and profiles:** registration, sign-in, profile settings, presence, privacy controls, and session management.
+- **Messaging:** direct messages, group conversations, message history, replies, reactions, pins, and search.
+- **Communities:** discoverable servers, channels, roles and permissions, invitations, member moderation, and events.
+- **Realtime features:** Socket.IO updates, typing indicators, notifications, and voice-channel signaling with configurable WebRTC ICE/TURN servers.
+- **Files:** staged attachments, per-file and per-user upload limits, and private S3-compatible storage for hosted deployments.
+- **Desktop:** a lightweight Electron app that opens the same hosted Relay service as the web client.
+
+> **Privacy note:** Relay stores message data on its backend. This repository does not implement end-to-end encryption, so do not treat Relay messages as end-to-end encrypted.
+
+## Technology
+
+| Area | Technology |
+|---|---|
+| Web client | React 18, TypeScript, Vite |
+| API | Node.js 22+, Express |
+| Realtime | Socket.IO and the PostgreSQL Socket.IO adapter |
+| Database | PostgreSQL |
+| Hosted database option | Neon |
+| File storage | Local disk for development; private S3-compatible object storage for production |
+| Desktop | Electron and electron-builder |
+| Validation and security | Zod, Helmet, CORS allowlist, HTTP-only sessions, bcrypt |
+
+The web client and API are npm workspaces: `client/` and `server/`.
 
 ## Run Relay locally
 
-You need Node.js 22 or newer, npm 10 or newer, and access to a PostgreSQL database.
+### Requirements
 
-1. Install dependencies:
+- Node.js **22 or newer**
+- npm **10 or newer**
+- A PostgreSQL database you can use for development
+
+### Setup
+
+1. Clone the repository and enter it:
 
    ```bash
-   npm install
+   git clone https://github.com/ThunderZyro/Relay.git
+   cd Relay
    ```
 
-2. Copy `.env.example` to `.env` and set:
-   - `DATABASE_URL`: your PostgreSQL connection string.
-   - `SESSION_SECRET`: a private random string of at least 32 characters.
+2. Install the exact dependencies recorded in the lockfile:
+
+   ```bash
+   npm ci
+   ```
+
+3. Copy the example environment file.
+
+   macOS/Linux:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Windows PowerShell:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+4. Edit `.env` and set at least:
+
+   - `DATABASE_URL` — your development PostgreSQL connection string.
+   - `SESSION_SECRET` — a private random value with at least 32 characters.
    - `CLIENT_ORIGIN=http://localhost:5173`.
 
-   Never commit your real `.env` file or share its secrets.
+   Replace the example session secret. Never commit `.env`, paste credentials into issues, or put production credentials in a local test environment.
 
-3. Start the API and web client:
+5. Start the API and web client:
 
    ```bash
    npm run dev
    ```
 
-4. Open [http://localhost:5173](http://localhost:5173).
+6. Open [http://localhost:5173](http://localhost:5173).
 
-The database migrations run automatically when the API starts. The first run also seeds the public Welcome to Relay sample server.
+Relay applies its database migrations when the API starts and creates a labelled sample **Welcome to Relay** community when it is missing.
 
 ## Build and test
 
+Run both TypeScript/Vite builds:
+
 ```bash
 npm run build
+```
+
+Run the server tests:
+
+```bash
 npm test
 ```
 
-The PostgreSQL integration test uses a disposable test database. Enable it with `RELAY_RUN_DB_TESTS=true` and a test-only `DATABASE_URL`. The GitHub Actions PostgreSQL workflow starts its own temporary PostgreSQL service, runs the API integration test, and builds both projects.
+The PostgreSQL integration test is opt-in locally. Use a **disposable test database**, then set `RELAY_RUN_DB_TESTS=true` before running the server test suite. The GitHub Actions integration workflow provisions its own temporary PostgreSQL service; it must never use production data.
 
-## Hosted deployment
+## Desktop app
 
-Configure these server-side environment variables:
+Relay Desktop is a Windows x64 Electron shell for the same hosted Relay account and conversations. It does not bundle a second database or local Relay server.
+
+Build the installer on Windows x64:
+
+```bash
+npm run desktop:build:win
+```
+
+The GitHub Actions desktop workflow also builds and publishes releases for matching `v*` tags. See [README-DESKTOP.md](README-DESKTOP.md) for the complete guide.
+
+## Environment variables
+
+Set server-side values in your hosting provider's secret/environment settings. Do not add real values to source control or Docker images.
 
 | Variable | Required | Purpose |
 |---|---:|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SESSION_SECRET` | Yes | Session signing key (at least 32 characters) |
-| `CLIENT_ORIGIN` | Yes | Main trusted web origin |
-| `ALLOWED_ORIGINS` | Optional | Comma-separated additional trusted web origins |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Optional | Private object storage credentials |
-| `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `RELAY_UPLOAD_BUCKET` | Optional | S3-compatible upload bucket |
-| `RESEND_API_KEY`, `RELAY_EMAIL_FROM` | Optional | Password reset email delivery |
-| `RELAY_ICE_SERVERS` | Optional | JSON array of WebRTC ICE/TURN servers |
+| `SESSION_SECRET` | Yes in production | Session-signing secret, at least 32 characters |
+| `CLIENT_ORIGIN` | Yes | Canonical trusted browser origin |
+| `ALLOWED_ORIGINS` | No | Comma-separated additional trusted origins |
+| `DATABASE_URL_PREVIEW` | No | Separate database URL used for Vercel Preview |
+| `RELAY_REALTIME_DATABASE_URL` | No | Direct PostgreSQL URL for cross-instance Socket.IO messaging |
+| `UPLOAD_DIR` | No | Local development upload directory |
+| `MAX_UPLOAD_MB` | No | Maximum size of one uploaded file |
+| `MAX_USER_STORAGE_MB` | No | Per-user staged and stored upload quota |
+| `STAGED_UPLOAD_TTL_HOURS` | No | Lifetime for unattached staged uploads |
+| `AWS_ACCESS_KEY_ID` | Production uploads | S3-compatible storage access key |
+| `AWS_SECRET_ACCESS_KEY` | Production uploads | S3-compatible storage secret |
+| `AWS_ENDPOINT_URL_S3` | Production uploads | S3-compatible endpoint |
+| `AWS_REGION` | Production uploads | Object-storage region |
+| `RELAY_UPLOAD_BUCKET` | No | Upload bucket name |
+| `RESEND_API_KEY` | Password recovery | Resend API key |
+| `RELAY_EMAIL_FROM` | Password recovery | Verified sender address |
+| `RELAY_ICE_SERVERS` | Voice relay | JSON array of WebRTC STUN/TURN server objects |
 
-For local or self-hosted deployments, use the included Dockerfile. Set `DATABASE_URL` and the required secrets in the hosting provider's environment-variable settings. Do not put production credentials into the Docker image or source control.
+For local development, Relay can store uploads on disk. Hosted production instances need persistent S3-compatible storage; when it is not configured, the health endpoint reports degraded storage and uploads are rejected rather than written to temporary serverless disk. Password recovery is available only when both Resend settings are configured.
 
-Password recovery returns a clear configuration status until both Resend variables are configured. The public `/api/health` endpoint reports `status: degraded` in production when persistent S3-compatible storage is unavailable, lists missing storage variable names (never their values), and reports whether password recovery is configured. Production uploads are rejected with HTTP 503 rather than written to temporary serverless disk. Voice uses public STUN when no TURN configuration is supplied; STUN alone cannot relay media through every restrictive network.
+More deployment details are in [docs/PRODUCTION_INTEGRATIONS.md](docs/PRODUCTION_INTEGRATIONS.md).
 
-## Realtime behavior
+## Repository map
 
-Relay uses Socket.IO for typing, messages, notifications, and voice signaling. Hosted serverless instances may recycle connections, so clients reconnect, rejoin their rooms, and refresh recent messages. The active conversation also periodically syncs the latest messages, protecting against events delivered to a different serverless instance.
+```text
+client/                   React + TypeScript web application
+server/                   Express API, PostgreSQL access, migrations, tests
+shared/                   Types shared by the client and server
+desktop/                  Electron desktop shell and installer config
+docs/                     Architecture and deployment documentation
+scripts/                  Desktop build helper scripts
+.github/workflows/        CI, CodeQL, and desktop release workflows
+README-DESKTOP.md         Windows desktop build and release guide
+```
 
-For a large multi-instance deployment, use a shared Socket.IO adapter/message broker and centralized presence/notification fan-out rather than relying on process-local rooms alone.
+See [docs/REPOSITORY_GUIDE.md](docs/REPOSITORY_GUIDE.md) for where to make changes and [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
 
-## Desktop app
+## Security and responsible use
 
-Relay Desktop is a lightweight Electron window around the same hosted Relay website. It does not create a separate local database or local social network. See [README-DESKTOP.md](README-DESKTOP.md).
+- Keep all database, session, object-storage, email, and TURN credentials in environment variables or a secret manager.
+- Use a separate PostgreSQL database for local development, tests, and previews.
+- Keep object storage private and use short-lived TURN credentials where supported.
+- Do not publish security vulnerabilities in public issue reports. See [SECURITY.md](SECURITY.md).
+- The repository includes CodeQL analysis and Dependabot update configuration.
+
+## License
+
+There is currently no `LICENSE` file in this repository. Until the project owner adds one, do not assume the code is licensed for reuse, redistribution, or commercial use.

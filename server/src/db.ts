@@ -104,7 +104,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 const migrations = [
   { version: 1, name: 'initial schema', file: '001_initial.sql' },
   { version: 2, name: 'membership timeout', file: '002_membership_timeout.sql' },
-  { version: 3, name: 'staged uploads', file: '003_staged_uploads.sql' }
+  { version: 3, name: 'staged uploads', file: '003_staged_uploads.sql' },
+  { version: 4, name: 'password reset tokens', file: '004_password_reset_tokens.sql' }
 ];
 const applyMigrations = db.transaction(() => {
   db.prepare('SELECT pg_advisory_xact_lock(71324001)').get();

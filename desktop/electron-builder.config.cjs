@@ -5,10 +5,18 @@ module.exports = {
   appId: 'com.relay.platform',
   productName: 'Relay',
   executableName: 'Relay',
-  directories: { output: 'release/desktop' },
+  // Pin the app directory to the repository root. electron-builder must stage
+  // the root package.json beside desktop/main.cjs in resources/app.
+  directories: { app: '.', output: 'release/desktop' },
+  // Use an explicit catch-all pattern. A positive custom files list replaces
+  // electron-builder's default **/* pattern; keep the Electron entry and app
+  // manifest in the app bundle, while excluding generated staging folders.
   files: [
-    'desktop/main.cjs',
-    'package.json'
+    '**/*',
+    '!desktop-runtime/**',
+    '!desktop-stage/**',
+    '!release/**',
+    '!**/*.map'
   ],
   extraResources: [
     { from: 'desktop-runtime/node.exe', to: 'runtime/node.exe' },

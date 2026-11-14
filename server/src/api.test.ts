@@ -41,7 +41,9 @@ function startApi(port: number, databaseFile: string, uploadDir: string): { chil
       DATABASE_FILE: databaseFile,
       UPLOAD_DIR: uploadDir,
       SESSION_SECRET: 'relay-integration-test-secret-with-more-than-32-characters',
-      CLIENT_ORIGIN: `http://127.0.0.1:${port + 1}`
+      CLIENT_ORIGIN: `http://127.0.0.1:${port + 1}`,
+      MAX_USER_STORAGE_MB: '1',
+      STAGED_UPLOAD_TTL_HOURS: '0.001'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -71,17 +73,33 @@ function sessionCookie(response: Response): string {
   return cookie;
 }
 
-async function request<T>(port: number, route: string, options: { method?: string; cookie?: string; body?: unknown } = {}): Promise<{ response: Response; data: T }> {
+async function request<T>(port: number, route: string, options: { method?: string; cookie?: string; body?: unknown; origin?: string | null; requestMarker?: boolean } = {}): Promise<{ response: Response; data: T }> {
+  const method = options.method || 'GET';
+  const headers: Record<string,string> = {
+    ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+    ...(options.cookie ? { cookie: options.cookie } : {})
+  };
+  if (!['GET','HEAD','OPTIONS'].includes(method.toUpperCase())) {
+    if (options.origin !== null) headers.origin = options.origin || `http://127.0.0.1:${port + 1}`;
+    if (options.requestMarker !== false) headers['x-relay-request'] = '1';
+  }
   const response = await fetch(`${apiPath}:${port}/api${route}`, {
-    method: options.method || 'GET',
-    headers: {
-      ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
-      ...(options.cookie ? { cookie: options.cookie } : {})
-    },
+    method,
+    headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
   const data = await response.json() as T;
   return { response, data };
+}
+
+async function uploadTextFile(port:number,cookie:string,size:number) {
+  const form=new FormData();
+  form.append('files',new Blob([new Uint8Array(size)],{type:'text/plain'}),`test-${size}.txt`);
+  return fetch(`${apiPath}:${port}/api/uploads`,{
+    method:'POST',
+    headers:{cookie,origin:`http://127.0.0.1:${port+1}`,'x-relay-request':'1'},
+    body:form
+  });
 }
 
 test('validates accounts, bounds invites, enforces DM privacy and permissions, and preserves SQLite data', async () => {
@@ -96,6 +114,20 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
   try {
     await waitForApi(port, processOne.child, processOne.logs);
 
+    const missingRequestMarker = await request(port, '/auth/register', {
+      method: 'POST',
+      requestMarker: false,
+      body: { email: 'csrf@example.test', username: 'csrf_test', password: 'relay-test-password-100' }
+    });
+    assert.equal(missingRequestMarker.response.status, 403, 'mutating API requests must carry the Relay request marker');
+
+    const untrustedOrigin = await request(port, '/auth/register', {
+      method: 'POST',
+      origin: 'https://attacker.example',
+      body: { email: 'origin@example.test', username: 'origin_test', password: 'relay-test-password-101' }
+    });
+    assert.equal(untrustedOrigin.response.status, 403, 'mutating API requests must come from a configured origin');
+
     const invalidRegistration = await request(port, '/auth/register', {
       method: 'POST', body: { email: 'not-an-email', username: 'x', password: 'short' }
     });
@@ -106,6 +138,15 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     });
     assert.equal(aliceRegistration.response.status, 201);
     const aliceCookie = sessionCookie(aliceRegistration.response);
+
+    const firstStagedUpload = await uploadTextFile(port,aliceCookie,700*1024);
+    assert.equal(firstStagedUpload.status,201,'an upload under the user quota should be accepted');
+    const firstUploadData=await firstStagedUpload.json() as {uploads:Array<{id:string}>};
+    await delay(4200);
+    const secondStagedUpload = await uploadTextFile(port,aliceCookie,700*1024);
+    assert.equal(secondStagedUpload.status,201,'expired staged uploads must be cleaned before applying the storage quota');
+    const expiredUpload = await request(port, `/uploads/${firstUploadData.uploads[0].id}`, {cookie:aliceCookie});
+    assert.equal(expiredUpload.response.status,404,'expired staged uploads must no longer be retrievable');
 
     const duplicateRegistration = await request(port, '/auth/register', {
       method: 'POST', body: { email: 'alice@example.test', username: 'alice_other', password: 'relay-test-password-010' }
@@ -153,6 +194,46 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     const charlieCookie = sessionCookie(charlieRegistration.response);
     const exhaustedInvite = await request(port, `/invites/${inviteResult.data.invite.code}/join`, { method: 'POST', cookie: charlieCookie, body: {} });
     assert.equal(exhaustedInvite.response.status, 404, 'invite use limits must be enforced');
+
+    const moderatorRole = await request<{role:{id:string}}>(port, `/servers/${serverResult.data.server.id}/roles`, {
+      method:'POST',cookie:aliceCookie,body:{name:'Episode Moderator',permissions:['manage_roles','timeout_members','view_channels','send_messages']}
+    });
+    assert.equal(moderatorRole.response.status,201);
+    const daveRegistration = await request<{user:{id:string}}>(port,'/auth/register',{
+      method:'POST',body:{email:'dave@example.test',username:'dave_test',password:'relay-test-password-004'}
+    });
+    assert.equal(daveRegistration.response.status,201);
+    const daveCookie=sessionCookie(daveRegistration.response);
+    const daveInvite=await request<{invite:{code:string}}>(port,`/servers/${serverResult.data.server.id}/invites`,{
+      method:'POST',cookie:aliceCookie,body:{expiresHours:24,maxUses:1}
+    });
+    assert.equal(daveInvite.response.status,201);
+    const daveJoin=await request(port,`/invites/${daveInvite.data.invite.code}/join`,{method:'POST',cookie:daveCookie,body:{}});
+    assert.equal(daveJoin.response.status,200);
+    const roles=await request<{roles:Array<{id:string;name:string}>}>(port,`/servers/${serverResult.data.server.id}/roles`,{cookie:aliceCookie});
+    const adminRole=roles.data.roles.find(role=>role.name==='Admin');
+    const memberRole=roles.data.roles.find(role=>role.name==='Member');
+    assert.ok(adminRole&&memberRole,'default server roles should exist');
+    const assignModerator=await request(port,`/servers/${serverResult.data.server.id}/members/${bobRegistration.data.user.id}/role`,{
+      method:'PATCH',cookie:aliceCookie,body:{roleId:moderatorRole.data.role.id}
+    });
+    assert.equal(assignModerator.response.status,200);
+    const assignAdmin=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}/role`,{
+      method:'PATCH',cookie:aliceCookie,body:{roleId:adminRole.id}
+    });
+    assert.equal(assignAdmin.response.status,200);
+    const demoteHigherMember=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}/role`,{
+      method:'PATCH',cookie:bobCookie,body:{roleId:memberRole.id}
+    });
+    assert.equal(demoteHigherMember.response.status,403,'a moderator cannot change the role of a higher-ranking member');
+    const setSeniorTimeout=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}/timeout`,{
+      method:'POST',cookie:aliceCookie,body:{minutes:5}
+    });
+    assert.equal(setSeniorTimeout.response.status,200);
+    const removeSeniorTimeout=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}/timeout`,{
+      method:'DELETE',cookie:bobCookie
+    });
+    assert.equal(removeSeniorTimeout.response.status,403,'a moderator cannot remove a timeout from a higher-ranking member');
 
     const revocableInvite = await request<{ invite: { code: string } }>(port, `/servers/${serverResult.data.server.id}/invites`, {
       method: 'POST', cookie: aliceCookie, body: { expiresHours: 24, maxUses: 5 }

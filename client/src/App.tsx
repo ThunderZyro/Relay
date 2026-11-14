@@ -71,7 +71,7 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
            <input value={email} onChange={e=>setEmail(e.target.value)} type="email" autoComplete="email" maxLength={254} required placeholder="you@example.com"/>
           </Field>
           <Field label="Username">
-           <input value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" minLength={3} maxLength={24} required pattern="[A-Za-z0-9_.\\-]+" placeholder="Choose a username"/>
+           <input value={username} onChange={e=>setUsername(e.target.value)} autoComplete="username" minLength={3} maxLength={24} required pattern="(?:[A-Za-z0-9_.]|-){3,24}" placeholder="Choose a username"/>
           </Field>
          </>
        : <Field label="Email or username">

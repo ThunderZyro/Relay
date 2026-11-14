@@ -580,7 +580,11 @@ app.patch('/api/servers/:serverId/roles/:roleId', requireAuth, (req: AuthedReque
   const role=db.prepare('SELECT * FROM roles WHERE id=? AND server_id=?').get(req.params.roleId,req.params.serverId) as any; if(!role)return fail(res,404,'Role not found.');
   const nextPerms=p.data.permissions||JSON.parse(role.permissions); const actorPerms=JSON.parse((membership(req.params.serverId,req.user!.id)?.permissions)||'[]') as string[]; const serverOwner=(db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any)?.owner_id===req.user!.id; if(!serverOwner && nextPerms.some((x:string)=>!actorPerms.includes(x)))return fail(res,403,'You cannot grant permissions you do not hold.'); if(!serverOwner && role.position>=((membership(req.params.serverId,req.user!.id)?.position)||0))return fail(res,403,'You cannot edit an equal or higher role.');
   const adminRoleCount=(db.prepare("SELECT COUNT(*) AS n FROM roles WHERE server_id=? AND permissions LIKE '%manage_server%'").get(req.params.serverId) as any).n; if(!nextPerms.includes('manage_server') && JSON.parse(role.permissions).includes('manage_server') && !serverOwner && adminRoleCount<=1)return fail(res,400,'Keep at least one administrator role.');
-  db.prepare('UPDATE roles SET name=?,permissions=? WHERE id=?').run(p.data.name||role.name,JSON.stringify(nextPerms),role.id); res.json({ok:true});
+  const permissionsChanged=JSON.stringify(nextPerms)!==JSON.stringify(JSON.parse(role.permissions||'[]'));
+  const affected=permissionsChanged?db.prepare('SELECT user_id FROM memberships WHERE server_id=? AND role_id=?').all(req.params.serverId,role.id) as any[]:[];
+  db.prepare('UPDATE roles SET name=?,permissions=? WHERE id=?').run(p.data.name||role.name,JSON.stringify(nextPerms),role.id);
+  affected.forEach(member=>disconnectUserSockets(member.user_id));
+  res.json({ok:true});
 });
 app.patch('/api/servers/:serverId/members/:userId/role', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_roles'))return fail(res,403,'You do not have permission.');
@@ -603,13 +607,7 @@ app.patch('/api/servers/:serverId/members/:userId/role', requireAuth, (req: Auth
   if(targetPerms.includes('manage_server') && !assignedPerms.includes('manage_server') && (db.prepare('SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE ?').get(req.params.serverId,'%manage_server%') as any).n<=1)return fail(res,400,'Keep at least one administrator.');
   const result=db.prepare('UPDATE memberships SET role_id=? WHERE server_id=? AND user_id=?').run(p.data.roleId,req.params.serverId,req.params.userId);
   if(!result.changes)return fail(res,404,'Member not found.');
-  if(!JSON.parse(role.permissions||'[]').includes('view_channels')){
-    const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
-    void revokeServerMemberRooms(req.params.userId,channels);
-  } else if(isTimedOut(req.params.serverId,req.params.userId)){
-    const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
-    void revokeServerMemberRooms(req.params.userId,channels,true);
-  }
+  disconnectUserSockets(req.params.userId);
   res.json({ok:true});
 });
 
@@ -777,6 +775,10 @@ app.post('/api/reports/:reportId/resolve', requireAuth, (req: AuthedRequest,res)
 app.post('/api/messages/:messageId/reactions', requireAuth, (req: AuthedRequest,res) => {
   const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(m.channel_id && !canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
+  if(m.channel_id){
+    const serverId=(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any)?.server_id;
+    if(serverId && isTimedOut(serverId,req.user!.id))return fail(res,403,'Your server timeout is active.');
+  }
   if(m.dm_id && !canAccessDm(m.dm_id,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
   const p=z.object({emoji:z.string().min(1).max(16)}).safeParse(req.body); if(!p.success)return fail(res,400,'Choose a valid emoji.');
   const found=db.prepare('SELECT id FROM reactions WHERE message_id=? AND user_id=? AND emoji=?').get(m.id,req.user!.id,p.data.emoji) as any;
@@ -928,8 +930,8 @@ io.on('connection',(socket)=>{
   });
   socket.on('room:join-channel',(channelId:string,ack?:Function)=>{if(typeof channelId!=='string'||!canReadChannel(channelId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`channel:${channelId}`);ack?.({ok:true});});
   socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
-  socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
-  socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
+  socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(data?.channelId||'') as any;const canTypeChannel=!!data?.channelId&&!!channel&&canReadChannel(data.channelId,user.id)&&!isTimedOut(channel.server_id,user.id);const room=canTypeChannel?`channel:${data!.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
+  socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(data?.channelId||'') as any;const canTypeChannel=!!data?.channelId&&!!channel&&canReadChannel(data.channelId,user.id)&&!isTimedOut(channel.server_id,user.id);const room=canTypeChannel?`channel:${data!.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
   socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,userId:s.data.user?.id,username:s.data.user?.username}:null;}).filter(Boolean)});});
   socket.on('voice:leave',(channelId:string)=>{
     if(typeof channelId!=='string')return;

@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS sessions (
  token_hash TEXT NOT NULL UNIQUE, user_agent TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
  expires_at TEXT NOT NULL, last_active TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci ON users (LOWER(email));\nCREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci ON users (LOWER(username));\nCREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci ON users (LOWER(email));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci ON users (LOWER(username));
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS settings (
  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );

@@ -295,7 +295,7 @@ app.get('/api/blocks', requireAuth, (req: AuthedRequest,res) => {
 app.post('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => {
   if(req.params.userId===req.user!.id)return fail(res,400,'You cannot block yourself.');
   if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(req.params.userId))return fail(res,404,'User not found.');
-  db.prepare('INSERT OR IGNORE INTO blocks(blocker_id,blocked_id) VALUES(?,?)').run(req.user!.id,req.params.userId);
+  db.prepare('INSERT INTO blocks(blocker_id,blocked_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.user!.id,req.params.userId);
   db.prepare('DELETE FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)').run(req.user!.id,req.params.userId,req.params.userId,req.user!.id);
   disconnectUserSockets(req.user!.id);
   disconnectUserSockets(req.params.userId);
@@ -355,7 +355,7 @@ app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: Authed
   if(blockedEither(req.user!.id,parsed.data.userId))return fail(res,403,'A block prevents adding this user.');
   if(target.dm_privacy==='nobody')return fail(res,403,'This user does not accept direct messages.');
   if(target.dm_privacy==='friends' && !db.prepare(`SELECT 1 FROM friendships WHERE status='accepted' AND ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))`).get(req.user!.id,parsed.data.userId,parsed.data.userId,req.user!.id))return fail(res,403,'You must be friends before adding this user.');
-  db.prepare('INSERT OR IGNORE INTO dm_members(dm_id,user_id) VALUES(?,?)').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
+  db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.delete('/api/dms/:dmId/members/:userId', requireAuth, (req: AuthedRequest,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
@@ -394,7 +394,7 @@ app.post('/api/servers/:serverId/join', requireAuth, (req: AuthedRequest,res) =>
   if(!s)return fail(res,404,'Public server not found.');
   if(db.prepare('SELECT 1 FROM bans WHERE server_id=? AND user_id=?').get(s.id,req.user!.id))return fail(res,403,'You are banned from this server.');
   const role=db.prepare('SELECT id FROM roles WHERE server_id=? ORDER BY position ASC LIMIT 1').get(s.id) as any;
-  db.prepare('INSERT OR IGNORE INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?)').run(id(),s.id,req.user!.id,role?.id||null);
+  db.prepare('INSERT INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').run(id(),s.id,req.user!.id,role?.id||null);
   res.json({ok:true,serverId:s.id});
 });
 app.get('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {

@@ -14,10 +14,10 @@ echo.
 echo To use the cloud build:
 echo   1. Upload this project's CONTENTS to a GitHub repository.
 echo   2. Keep the .github folder.
-echo   3. Create a GitHub Release with tag v1.0.0.
+echo   3. Run Actions → Build Relay Desktop when you are ready to publish a desktop release.
 echo   4. Open Actions and download the installer from the release.
 echo.
-echo Local building is optional and downloads several hundred MB once.
+echo Local building is optional and downloads the Electron packaging tools once.
 echo.
 choice /C YN /N /M "Do you still want to install the local Windows build tools? [Y/N] "
 if errorlevel 2 goto cloud
@@ -51,7 +51,7 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Local setup complete. You can now run BUILD RELAY DESKTOP.bat.
+echo Local setup complete. You can now run BUILD RELAY DESKTOP.bat. The installed app uses the shared online Relay service.
 pause
 exit /b 0
 

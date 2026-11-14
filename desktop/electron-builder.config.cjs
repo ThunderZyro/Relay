@@ -1,5 +1,3 @@
-const path = require('node:path');
-
 const owner = process.env.RELAY_GITHUB_OWNER || 'ThunderZyro';
 const repo = process.env.RELAY_GITHUB_REPO || 'Relay';
 

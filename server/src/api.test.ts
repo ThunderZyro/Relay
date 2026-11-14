@@ -168,6 +168,13 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     });
     assert.equal(serverResult.response.status, 201);
 
+    const secondServer = await request<{server:{id:string}}>(port,'/servers',{
+      method:'POST',cookie:aliceCookie,body:{name:'Other Garden',description:'A separate server for category isolation tests.'}
+    });
+    assert.equal(secondServer.response.status,201);
+    const secondServerInfo = await request<{categories:Array<{id:string}>}>(port, `/servers/${secondServer.data.server.id}`, {cookie:aliceCookie});
+    assert.ok(secondServerInfo.data.categories.length>0);
+
     const inviteResult = await request<{ invite: { code: string } }>(port, `/servers/${serverResult.data.server.id}/invites`, {
       method: 'POST', cookie: aliceCookie, body: { expiresHours: 24, maxUses: 1 }
     });
@@ -209,6 +216,26 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     assert.equal(daveInvite.response.status,201);
     const daveJoin=await request(port,`/invites/${daveInvite.data.invite.code}/join`,{method:'POST',cookie:daveCookie,body:{}});
     assert.equal(daveJoin.response.status,200);
+
+    const raceInvite=await request<{invite:{code:string}}>(port,`/servers/${serverResult.data.server.id}/invites`,{
+      method:'POST',cookie:aliceCookie,body:{expiresHours:24,maxUses:1}
+    });
+    assert.equal(raceInvite.response.status,201);
+    const erin=await request<{user:{id:string}}>(port,'/auth/register',{method:'POST',body:{email:'erin@example.test',username:'erin_test',password:'relay-test-password-005'}});
+    const frank=await request<{user:{id:string}}>(port,'/auth/register',{method:'POST',body:{email:'frank@example.test',username:'frank_test',password:'relay-test-password-006'}});
+    assert.equal(erin.response.status,201);assert.equal(frank.response.status,201);
+    const erinCookie=sessionCookie(erin.response);const frankCookie=sessionCookie(frank.response);
+    const concurrentJoins=await Promise.all([
+      request(port,`/invites/${raceInvite.data.invite.code}/join`,{method:'POST',cookie:erinCookie,body:{}}),
+      request(port,`/invites/${raceInvite.data.invite.code}/join`,{method:'POST',cookie:frankCookie,body:{}})
+    ]);
+    assert.equal(concurrentJoins.filter(join=>join.response.status===200).length,1,'a maxUses=1 invite must admit exactly one concurrent join');
+
+    const crossServerCategory=await request(port,`/channels/${serverResult.data.channelId}`,{
+      method:'PATCH',cookie:aliceCookie,body:{category_id:secondServerInfo.data.categories[0].id}
+    });
+    assert.equal(crossServerCategory.response.status,400,'a channel cannot be moved into another server\'s category');
+
     const roles=await request<{roles:Array<{id:string;name:string}>}>(port,`/servers/${serverResult.data.server.id}/roles`,{cookie:aliceCookie});
     const adminRole=roles.data.roles.find(role=>role.name==='Admin');
     const memberRole=roles.data.roles.find(role=>role.name==='Member');
@@ -299,11 +326,27 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     const aliceDmHistory = await request<{ messages: Array<{ content: string }> }>(port, `/dms/${dm.data.conversation.id}/messages`, { cookie: aliceCookie });
     assert.ok(aliceDmHistory.data.messages.some(message => message.content === 'Reply from Bob.'), 'both participants must read the same DM history');
 
+    const groupDm=await request<{conversation:{id:string}}>(port,'/dms',{method:'POST',cookie:aliceCookie,body:{userIds:[bobRegistration.data.user.id,charlieRegistration.data.user.id],name:'Garden Group'}});
+    assert.equal(groupDm.response.status,201);
+    const groupMessage=await request(port,`/dms/${groupDm.data.conversation.id}/messages`,{method:'POST',cookie:aliceCookie,body:{content:'Group messages remain available after a one-to-one block.'}});
+    assert.equal(groupMessage.response.status,201);
+
     const createdMessage = await request<{ message: { id: string; content: string } }>(port, `/channels/${serverResult.data.channelId}/messages`, {
       method: 'POST', cookie: aliceCookie, body: { content: 'Persistent hello from Alice.' }
     });
     assert.equal(createdMessage.response.status, 201);
     assert.equal(createdMessage.data.message.content, 'Persistent hello from Alice.');
+
+    const pinOnlyRole=await request<{role:{id:string}}>(port,`/servers/${serverResult.data.server.id}/roles`,{
+      method:'POST',cookie:aliceCookie,body:{name:'Pin Without View',permissions:['pin_messages']}
+    });
+    assert.equal(pinOnlyRole.response.status,201);
+    const assignPinOnly=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}/role`,{
+      method:'PATCH',cookie:aliceCookie,body:{roleId:pinOnlyRole.data.role.id}
+    });
+    assert.equal(assignPinOnly.response.status,200);
+    const hiddenPin=await request(port,`/messages/${createdMessage.data.message.id}/pin`,{method:'POST',cookie:daveCookie,body:{}});
+    assert.equal(hiddenPin.response.status,403,'pin permission must not bypass channel visibility');
 
     const bobMessages = await request<{ messages: Array<{ id: string; content: string }> }>(port, `/channels/${serverResult.data.channelId}/messages`, { cookie: bobCookie });
     assert.equal(bobMessages.response.status, 200);
@@ -319,7 +362,17 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     const blockBob = await request(port, `/blocks/${bobRegistration.data.user.id}`, { method: 'POST', cookie: aliceCookie, body: {} });
     assert.equal(blockBob.response.status, 200);
     const blockedDmRead = await request(port, `/dms/${dm.data.conversation.id}/messages`, { cookie: bobCookie });
-    assert.equal(blockedDmRead.response.status, 403, 'blocks must prevent access to existing DMs');
+    assert.equal(blockedDmRead.response.status, 403, 'blocks must prevent access to existing one-to-one DMs');
+    const groupAfterBlock=await request<{messages:Array<{content:string}>}>(port,`/dms/${groupDm.data.conversation.id}/messages`,{cookie:aliceCookie});
+    assert.equal(groupAfterBlock.response.status,200,'blocking one participant must not hide the entire group');
+    assert.ok(groupAfterBlock.data.messages.some(message=>message.content==='Group messages remain available after a one-to-one block.'));
+
+    const kickDave=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}?action=kick`,{
+      method:'DELETE',cookie:aliceCookie
+    });
+    assert.equal(kickDave.response.status,200);
+    const kickedServerRead=await request(port,`/servers/${serverResult.data.server.id}`,{cookie:daveCookie});
+    assert.equal(kickedServerRead.response.status,403,'a kicked member must immediately lose server access');
 
     await stop(processOne.child);
     processTwo = startApi(port, uploadDir);

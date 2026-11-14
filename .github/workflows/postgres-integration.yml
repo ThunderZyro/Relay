@@ -27,6 +27,7 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgres://relay:relay@localhost:5432/relay
+      RELAY_RUN_DB_TESTS: 'true'
     steps:
       - name: Check out Relay
         uses: actions/checkout@v4

@@ -13,8 +13,7 @@ const cloudReady=missingStorageEnvironment.length===0;
 const s3=cloudReady?new S3Client({region:process.env.AWS_REGION,endpoint:process.env.AWS_ENDPOINT_URL_S3,forcePathStyle:true,credentials:{accessKeyId:process.env.AWS_ACCESS_KEY_ID!,secretAccessKey:process.env.AWS_SECRET_ACCESS_KEY!}}):null;
 
 export const persistentStorageEnabled=!!s3;
-export async function storeUpload(bytes:Buffer,mime:string):Promise<string>{
- const key=crypto.randomUUID();
+export async function storeUpload(bytes:Buffer,mime:string,key=crypto.randomUUID()):Promise<string>{
  if(s3){await s3.send(new PutObjectCommand({Bucket:bucket,Key:key,Body:bytes,ContentType:mime}));return key;}
  await fs.mkdir(uploadDir,{recursive:true});await fs.writeFile(path.join(uploadDir,key),bytes,{flag:'wx'});return key;
 }

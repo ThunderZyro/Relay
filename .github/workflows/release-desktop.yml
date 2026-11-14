@@ -2,6 +2,8 @@ name: Build Relay Desktop
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -14,12 +16,31 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify complete source tree
+        shell: pwsh
+        run: |
+          $required = @(
+            'client/package.json',
+            'server/package.json',
+            'desktop/main.cjs',
+            'desktop/electron-builder.config.cjs',
+            'scripts/prepare-desktop.mjs',
+            'shared/types.ts'
+          )
+          $missing = @($required | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) {
+            Write-Error ("The repository is missing required Relay source files: " + ($missing -join ', ') + ". Upload the client, server, desktop, scripts, and shared folders to the repository root.")
+            exit 1
+          }
 
       - name: Install dependencies on GitHub
         run: npm install --no-audit --no-fund
@@ -41,7 +62,7 @@ jobs:
 
       - name: Keep installer artifacts available
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: relay-desktop-windows
           path: release/desktop/*

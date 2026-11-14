@@ -6,7 +6,7 @@ COPY client/package.json ./client/package.json
 COPY server/package.json ./server/package.json
 RUN npm install --no-audit --no-fund
 COPY . .
-RUN npm run build
+RUN npm test && npm run build
 ENV NODE_ENV=production
 ENV PORT=3001
 ENV DATABASE_FILE=/data/relay.sqlite

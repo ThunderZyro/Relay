@@ -216,7 +216,7 @@ async function checkForDesktopUpdates(manual = false) {
         await dialog.showMessageBox(mainWindow, {
           type: 'error',
           title: 'Could not check for updates',
-          message: `Relay could not check GitHub Releases. Check your internet connection and try again.\\n\\nDetails: ${message}`,
+          message: `Relay could not check GitHub Releases. Check your internet connection and try again.\n\nDetails: ${message}`,
           buttons: ['OK']
         });
       }

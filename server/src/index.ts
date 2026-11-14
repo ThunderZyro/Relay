@@ -119,6 +119,58 @@ function canReadChannel(channelId: string, userId: string) {
   const channel = db.prepare('SELECT server_id FROM channels WHERE id=?').get(channelId) as any;
   return !!channel && !!membership(channel.server_id, userId) && hasPermission(channel.server_id, userId, 'view_channels');
 }
+function isTimedOut(serverId: string, userId: string) {
+  const member = membership(serverId, userId);
+  return !!member?.timeout_until && new Date(member.timeout_until).getTime() > Date.now();
+}
+function canJoinVoiceChannel(channelId: string, userId: string) {
+  const channel = db.prepare('SELECT server_id,type FROM channels WHERE id=?').get(channelId) as any;
+  return !!channel && channel.type === 'voice' && canReadChannel(channelId, userId) && !isTimedOut(channel.server_id, userId);
+}
+async function revokeServerMemberRooms(userId: string, channels: Array<{id:string;type:string}>, voiceOnly = false) {
+  const sockets = await io.in(`user:${userId}`).fetchSockets();
+  for (const channel of channels) {
+    const channelRoom = `channel:${channel.id}`;
+    const voiceRoom = `voice:${channel.id}`;
+    for (const socket of sockets) {
+      if (channel.type === 'voice' && socket.rooms.has(voiceRoom)) {
+        socket.leave(voiceRoom);
+        const connectedUser = (socket.data as any).user;
+        io.to(voiceRoom).emit('voice:participant', {
+          userId,
+          username: connectedUser?.username || '',
+          socketId: socket.id,
+          state: 'left'
+        });
+      }
+      if (!voiceOnly && socket.rooms.has(channelRoom)) socket.leave(channelRoom);
+    }
+  }
+}
+async function revokeChannelRooms(channel: {id:string;type:string}) {
+  const voiceRoom = `voice:${channel.id}`;
+  if (channel.type === 'voice') {
+    const sockets = await io.in(voiceRoom).fetchSockets();
+    for (const socket of sockets) {
+      const connectedUser = (socket.data as any).user;
+      socket.leave(voiceRoom);
+      io.to(voiceRoom).emit('voice:participant', {
+        userId: connectedUser?.id || '',
+        username: connectedUser?.username || '',
+        socketId: socket.id,
+        state: 'left'
+      });
+    }
+  }
+  io.in(`channel:${channel.id}`).socketsLeave(`channel:${channel.id}`);
+}
+function deleteStoredObjects(storageNames: string[]) {
+  for (const storageName of new Set(storageNames.filter(Boolean))) {
+    if (path.basename(storageName) === storageName) {
+      void deleteUpload(storageName).catch(error => console.error('Stored upload cleanup failed.', error));
+    }
+  }
+}
 function notify(userId: string, type: string, title: string, body: string, href: string) {
   const pref=db.prepare('SELECT data FROM settings WHERE user_id=?').get(userId) as any; let prefs:any={}; try{prefs=JSON.parse(pref?.data||'{}');}catch{}
   if((type==='dm' && prefs.dmNotifications===false) || (type==='mention' && prefs.mentionNotifications===false)) return;
@@ -161,8 +213,16 @@ app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
   if (db.prepare('SELECT 1 FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(email, username)) return fail(res, 409, 'That email or username is already in use.');
   const userId = id();
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
-  db.prepare('INSERT INTO users(id,email,username,password_hash) VALUES(?,?,?,?)').run(userId,email,username,passwordHash);
-  db.prepare('INSERT INTO settings(user_id,data) VALUES(?,?)').run(userId, JSON.stringify({ theme:'graphite', density:'comfortable', accent:'#8795a2', fontScale:100, reducedMotion:false, contrast:'normal', messageLayout:'cozy', keybinds:{ focusSearch:'Ctrl+K', toggleMembers:'Ctrl+Shift+M' } }));
+  try {
+    const createAccount=db.transaction(()=>{
+      db.prepare('INSERT INTO users(id,email,username,password_hash) VALUES(?,?,?,?)').run(userId,email,username,passwordHash);
+      db.prepare('INSERT INTO settings(user_id,data) VALUES(?,?)').run(userId, JSON.stringify({ theme:'graphite', density:'comfortable', accent:'#8795a2', fontScale:100, reducedMotion:false, contrast:'normal', messageLayout:'cozy', keybinds:{ focusSearch:'Ctrl+K', toggleMembers:'Ctrl+Shift+M' } }));
+    });
+    createAccount();
+  } catch(error:any) {
+    if(error?.code==='23505')return fail(res,409,'That email or username is already in use.');
+    throw error;
+  }
   createSession(req, res, userId);
   const saved=db.prepare('SELECT * FROM users WHERE id=?').get(userId) as any; res.status(201).json({ user:{...userPublic(saved),email:saved.email} });
 }));
@@ -214,17 +274,19 @@ app.post('/api/auth/forgot-password', authLimiter, asyncRoute(async (req,res) =>
 app.post('/api/auth/reset-password', authLimiter, asyncRoute(async (req,res) => {
   const p=z.object({token:z.string().min(20).max(200),password:z.string().min(10).max(128)}).safeParse(req.body);
   if(!p.success)return fail(res,400,'Use a valid reset link and a password of at least 10 characters.');
-  const reset=db.prepare('SELECT id,user_id FROM password_reset_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>NOW()').get(sha(p.data.token)) as any;
-  if(!reset)return fail(res,400,'This password reset link is invalid or has expired.');
   const passwordHash=await bcrypt.hash(p.data.password,12);
-  const revoked=db.prepare('SELECT id FROM sessions WHERE user_id=?').all(reset.user_id) as any[];
-  const tx=db.transaction(()=>{
+  const resetResult=db.transaction(()=>{
+    const reset=db.prepare('SELECT id,user_id FROM password_reset_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>NOW() FOR UPDATE').get(sha(p.data.token)) as any;
+    if(!reset)return null;
+    const revoked=db.prepare('SELECT id FROM sessions WHERE user_id=?').all(reset.user_id) as any[];
     db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(passwordHash,reset.user_id);
-    db.prepare('UPDATE password_reset_tokens SET used_at=NOW() WHERE id=?').run(reset.id);
+    db.prepare('UPDATE password_reset_tokens SET used_at=NOW() WHERE id=? AND used_at IS NULL').run(reset.id);
     db.prepare('DELETE FROM password_reset_tokens WHERE user_id=? AND id<>?').run(reset.user_id,reset.id);
     db.prepare('DELETE FROM sessions WHERE user_id=?').run(reset.user_id);
-  });
-  tx();revoked.forEach(session=>disconnectSessionSockets(session.id));
+    return revoked;
+  })();
+  if(!resetResult)return fail(res,400,'This password reset link is invalid or has expired.');
+  resetResult.forEach(session=>disconnectSessionSockets(session.id));
   res.json({ok:true});
 }));
 
@@ -346,6 +408,8 @@ app.delete('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => { db.
 
 function canAccessDm(dmId: string,userId: string) {
   if (!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(dmId,userId)) return false;
+  const conversation=db.prepare('SELECT is_group FROM dms WHERE id=?').get(dmId) as any;
+  if (conversation?.is_group) return true;
   const peers=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(dmId,userId) as any[];
   return !peers.some(peer=>blockedEither(userId,peer.user_id));
 }
@@ -355,7 +419,7 @@ function dmSummary(dmId: string,userId: string) {
     FROM dms d JOIN dm_members me ON me.dm_id=d.id WHERE d.id=? AND me.user_id=?`).get(dmId,userId) as any;
   if(!row)return null;
   const peerIds=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(dmId,userId) as any[];
-  if(peerIds.some(peer=>blockedEither(userId,peer.user_id)))return null;
+  if(!row.is_group && peerIds.some(peer=>blockedEither(userId,peer.user_id)))return null;
   const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
   return {...row,members};
 }
@@ -455,15 +519,19 @@ app.delete('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
   const s=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); if(s.owner_id!==req.user!.id)return fail(res,403,'Only the server owner can delete this server.');
   const members=db.prepare('SELECT user_id FROM memberships WHERE server_id=?').all(req.params.serverId) as any[];
+  const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
+  const files=db.prepare('SELECT a.storage_name FROM attachments a JOIN messages m ON m.id=a.message_id JOIN channels c ON c.id=m.channel_id WHERE c.server_id=?').all(req.params.serverId) as any[];
   db.prepare('DELETE FROM servers WHERE id=?').run(req.params.serverId);
-  members.forEach(member=>disconnectUserSockets(member.user_id));
+  members.forEach(member=>void revokeServerMemberRooms(member.user_id,channels));
+  deleteStoredObjects(files.map((file:any)=>file.storage_name));
   res.json({ok:true});
 });
 app.post('/api/servers/:serverId/leave', requireAuth, (req: AuthedRequest,res) => {
   const s=db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any;
   if(!s)return fail(res,404,'Server not found.'); if(s.owner_id===req.user!.id)return fail(res,400,'Transfer ownership before leaving as the owner.');
+  const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
   db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.user!.id);
-  disconnectUserSockets(req.user!.id);
+  void revokeServerMemberRooms(req.user!.id,channels);
   res.json({ok:true});
 });
 app.post('/api/servers/:serverId/channels', requireAuth, (req: AuthedRequest,res) => {
@@ -478,15 +546,18 @@ app.patch('/api/channels/:channelId', requireAuth, (req: AuthedRequest,res) => {
   const c=db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.channelId) as any; if(!c)return fail(res,404,'Channel not found.');
   if(!hasPermission(c.server_id,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
   const p=z.object({name:z.string().trim().min(1).max(80).optional(),topic:z.string().max(200).optional(),slow_mode:z.number().int().min(0).max(21600).optional(),category_id:z.string().nullable().optional(),position:z.number().int().optional()}).safeParse(req.body);
-  if(!p.success)return fail(res,400,'Invalid channel settings.'); const fields=Object.entries(p.data); if(fields.length)db.prepare(`UPDATE channels SET ${fields.map(([k])=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(([,v])=>v),c.id);
+  if(!p.success)return fail(res,400,'Invalid channel settings.');
+  if(p.data.category_id && !db.prepare('SELECT 1 FROM categories WHERE id=? AND server_id=?').get(p.data.category_id,c.server_id))return fail(res,400,'That category does not belong to this server.');
+  const fields=Object.entries(p.data); if(fields.length)db.prepare(`UPDATE channels SET ${fields.map(([k])=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(([,v])=>v),c.id);
   res.json({channel:db.prepare('SELECT * FROM channels WHERE id=?').get(c.id)});
 });
 app.delete('/api/channels/:channelId', requireAuth, (req: AuthedRequest,res) => {
   const c=db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.channelId) as any; if(!c)return fail(res,404,'Channel not found.');
   if(!hasPermission(c.server_id,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
+  const files=db.prepare('SELECT a.storage_name FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.channel_id=?').all(c.id) as any[];
   db.prepare('DELETE FROM channels WHERE id=?').run(c.id);
-  io.in(`channel:${c.id}`).socketsLeave(`channel:${c.id}`);
-  io.in(`voice:${c.id}`).socketsLeave(`voice:${c.id}`);
+  void revokeChannelRooms({id:c.id,type:c.type});
+  deleteStoredObjects(files.map((file:any)=>file.storage_name));
   res.json({ok:true});
 });
 app.post('/api/servers/:serverId/categories', requireAuth, (req: AuthedRequest,res) => {
@@ -532,7 +603,13 @@ app.patch('/api/servers/:serverId/members/:userId/role', requireAuth, (req: Auth
   if(targetPerms.includes('manage_server') && !assignedPerms.includes('manage_server') && (db.prepare('SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE ?').get(req.params.serverId,'%manage_server%') as any).n<=1)return fail(res,400,'Keep at least one administrator.');
   const result=db.prepare('UPDATE memberships SET role_id=? WHERE server_id=? AND user_id=?').run(p.data.roleId,req.params.serverId,req.params.userId);
   if(!result.changes)return fail(res,404,'Member not found.');
-  disconnectUserSockets(req.params.userId);
+  if(!JSON.parse(role.permissions||'[]').includes('view_channels')){
+    const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
+    void revokeServerMemberRooms(req.params.userId,channels);
+  } else if(isTimedOut(req.params.serverId,req.params.userId)){
+    const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
+    void revokeServerMemberRooms(req.params.userId,channels,true);
+  }
   res.json({ok:true});
 });
 
@@ -545,8 +622,11 @@ app.delete('/api/servers/:serverId/members/:userId', requireAuth, (req: AuthedRe
   const actor=membership(req.params.serverId,req.user!.id); const target=membership(req.params.serverId,req.params.userId); if(!target)return fail(res,404,'Member not found.');
   if(s.owner_id!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot remove an equal or higher role.');
   if((target.permissions||'').includes('manage_server')){const admins=(db.prepare(`SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE '%manage_server%'`).get(req.params.serverId) as any).n;if(admins<=1)return fail(res,400,'Keep at least one administrator in the server.');}
+  const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
   if(action==='ban')db.prepare('INSERT INTO bans(server_id,user_id,moderator_id,reason) VALUES(?,?,?,?) ON CONFLICT(server_id,user_id) DO UPDATE SET moderator_id=EXCLUDED.moderator_id,reason=EXCLUDED.reason').run(req.params.serverId,req.params.userId,req.user!.id,String(req.body?.reason||'').slice(0,200));
-  db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId); res.json({ok:true,action});
+  db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId);
+  void revokeServerMemberRooms(req.params.userId,channels);
+  res.json({ok:true,action});
 });
 app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'timeout_members'))return fail(res,403,'You do not have permission to timeout members.');
@@ -554,7 +634,10 @@ app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: Au
   const p=z.object({minutes:z.number().int().min(1).max(10080)}).safeParse(req.body); if(!p.success)return fail(res,400,'Timeout must be between 1 minute and 7 days.');
   const ownerId=(db.prepare('SELECT owner_id FROM servers WHERE id=?').get(req.params.serverId) as any)?.owner_id; if(ownerId===req.params.userId)return fail(res,400,'The server owner cannot be timed out.');
   const actor=membership(req.params.serverId,req.user!.id); const target=membership(req.params.serverId,req.params.userId); if(!target)return fail(res,404,'Member not found.'); if(ownerId!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot timeout an equal or higher role.');
-  const until=new Date(Date.now()+p.data.minutes*60000).toISOString(); const r=db.prepare('UPDATE memberships SET timeout_until=? WHERE server_id=? AND user_id=?').run(until,req.params.serverId,req.params.userId); if(!r.changes)return fail(res,404,'Member not found.'); res.json({ok:true,timeout_until:until});
+  const until=new Date(Date.now()+p.data.minutes*60000).toISOString(); const r=db.prepare('UPDATE memberships SET timeout_until=? WHERE server_id=? AND user_id=?').run(until,req.params.serverId,req.params.userId); if(!r.changes)return fail(res,404,'Member not found.');
+  const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
+  void revokeServerMemberRooms(req.params.userId,channels,true);
+  res.json({ok:true,timeout_until:until});
 });
 app.delete('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'timeout_members'))return fail(res,403,'You do not have permission.');
@@ -592,13 +675,21 @@ app.get('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
   res.json({invite:{code:row.code,server:{id:row.server_id,name:row.name,description:row.description,icon:row.icon,member_count:row.member_count},expires_at:row.expires_at,uses:row.uses}});
 });
 app.post('/api/invites/:code/join', requireAuth, (req: AuthedRequest,res) => {
-  const row=db.prepare('SELECT * FROM invites WHERE code=?').get(req.params.code) as any;
-  if(!row || row.revoked || (row.expires_at && new Date(row.expires_at).getTime()<Date.now()) || (row.max_uses && row.uses>=row.max_uses))return fail(res,404,'This invite is invalid, expired, or full.');
-  if(db.prepare('SELECT 1 FROM bans WHERE server_id=? AND user_id=?').get(row.server_id,req.user!.id))return fail(res,403,'You are banned from this server.');
-  const alreadyMember=!!membership(row.server_id,req.user!.id);
-  const role=db.prepare(`SELECT id FROM roles WHERE server_id=? ORDER BY position ASC LIMIT 1`).get(row.server_id) as any;
-  const tx=db.transaction(()=>{if(!alreadyMember){db.prepare('INSERT INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?)').run(id(),row.server_id,req.user!.id,role?.id||null); db.prepare('UPDATE invites SET uses=uses+1 WHERE code=?').run(row.code);}}); tx();
-  res.json({ok:true,serverId:row.server_id});
+  const result=db.transaction(()=>{
+    const row=db.prepare('SELECT * FROM invites WHERE code=? FOR UPDATE').get(req.params.code) as any;
+    if(!row || row.revoked || (row.expires_at && new Date(row.expires_at).getTime()<=Date.now()) || (row.max_uses && row.uses>=row.max_uses))return {error:'invalid'} as const;
+    if(db.prepare('SELECT 1 FROM bans WHERE server_id=? AND user_id=?').get(row.server_id,req.user!.id))return {error:'banned'} as const;
+    const alreadyMember=!!membership(row.server_id,req.user!.id);
+    if(!alreadyMember){
+      const claimed=db.prepare('UPDATE invites SET uses=uses+1 WHERE code=? AND revoked=0 AND (max_uses IS NULL OR uses<max_uses) AND (expires_at IS NULL OR expires_at>NOW())').run(row.code);
+      if(!claimed.changes)return {error:'invalid'} as const;
+      const role=db.prepare('SELECT id FROM roles WHERE server_id=? ORDER BY position ASC LIMIT 1').get(row.server_id) as any;
+      db.prepare('INSERT INTO memberships(id,server_id,user_id,role_id) VALUES(?,?,?,?)').run(id(),row.server_id,req.user!.id,role?.id||null);
+    }
+    return {serverId:row.server_id} as const;
+  })();
+  if('error' in result)return fail(res,result.error==='banned'?403:404,result.error==='banned'?'You are banned from this server.':'This invite is invalid, expired, or full.');
+  res.json({ok:true,serverId:result.serverId});
 });
 app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
   const row=db.prepare('SELECT server_id FROM invites WHERE code=?').get(req.params.code) as any; if(!row)return fail(res,404,'Invite not found.');
@@ -685,6 +776,7 @@ app.post('/api/messages/:messageId/reactions', requireAuth, (req: AuthedRequest,
 app.post('/api/messages/:messageId/pin', requireAuth, (req: AuthedRequest,res) => {
   const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m || !m.channel_id)return fail(res,404,'Channel message not found.');
   const serverId=(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any).server_id;
+  if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
   if(!hasPermission(serverId,req.user!.id,'pin_messages'))return fail(res,403,'You do not have permission to pin messages.');
   db.prepare('UPDATE messages SET pinned=CASE pinned WHEN 1 THEN 0 ELSE 1 END WHERE id=?').run(m.id);
   const updated=messageRows('m.id=?',[m.id],1)[0];
@@ -695,10 +787,11 @@ app.get('/api/search', requireAuth, (req: AuthedRequest,res) => {
   const q=String(req.query.q||'').trim().slice(0,100); if(q.length<2)return res.json({users:[],servers:[],messages:[]}); const like=`%${q}%`;
   const users=(db.prepare('SELECT id,username,avatar,presence,status_text,activity_visible,created_at FROM users WHERE username LIKE ? AND id<>? LIMIT 10').all(like,req.user!.id) as any[]).map(userPublic);
   const servers=db.prepare(`SELECT DISTINCT s.id,s.name,s.description FROM servers s JOIN memberships m ON m.server_id=s.id WHERE m.user_id=? AND s.name LIKE ? LIMIT 10`).all(req.user!.id,like);
-  const candidates=db.prepare(`SELECT m.id,m.content,m.created_at,m.channel_id,m.dm_id,c.server_id,u.username FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN channels c ON c.id=m.channel_id
+  const candidates=db.prepare(`SELECT m.id,m.content,m.created_at,m.channel_id,m.dm_id,c.server_id,u.username,d.is_group FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN channels c ON c.id=m.channel_id LEFT JOIN dms d ON d.id=m.dm_id
     WHERE m.content LIKE ? AND m.deleted_at IS NULL AND ((m.channel_id IN (SELECT c.id FROM channels c JOIN memberships x ON x.server_id=c.server_id WHERE x.user_id=?)) OR (m.dm_id IN (SELECT dm_id FROM dm_members WHERE user_id=?))) ORDER BY m.created_at DESC LIMIT 100`).all(like,req.user!.id,req.user!.id) as any[];
   const messages=candidates.filter(message=>{
     if(message.channel_id)return canReadChannel(message.channel_id,req.user!.id);
+    if(message.is_group)return true;
     const peers=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(message.dm_id,req.user!.id) as any[];
     return !peers.some(peer=>blockedEither(req.user!.id,peer.user_id));
   }).slice(0,20);
@@ -761,15 +854,18 @@ app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8
   const incomingBytes=files.reduce((total,file)=>total+file.size,0);
   if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes)return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
   const saved:any[]=[];
+  const createdKeys:string[]=[];
   try {
     for(const file of files){
       const key=await storeUpload(file.buffer,file.mimetype),uid=id();
+      createdKeys.push(key);
       db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)')
         .run(uid,req.user!.id,path.basename(file.originalname).slice(0,180),file.mimetype,file.size,key);
       saved.push({id:uid,filename:path.basename(file.originalname),mime:file.mimetype,size:file.size,url:`/api/uploads/${uid}`});
     }
   } catch(error) {
-    for(const item of saved){const row=db.prepare('SELECT storage_name FROM staged_uploads WHERE id=?').get(item.id) as any;if(row){void deleteUpload(row.storage_name).catch(()=>{});db.prepare('DELETE FROM staged_uploads WHERE id=?').run(item.id);}}
+    for(const key of createdKeys)void deleteUpload(key).catch(()=>{});
+    for(const item of saved)db.prepare('DELETE FROM staged_uploads WHERE id=?').run(item.id);
     throw error;
   }
   res.status(201).json({uploads:saved,limitBytes:maxUpload,storageLimitBytes:maxUserStorageBytes,persistent:persistentStorageEnabled});
@@ -801,8 +897,12 @@ io.on('connection',(socket)=>{
   const user=(socket.data as any).user;
   socket.join(`user:${user.id}`);
   socket.join(`session:${user.session_id}`);
-  const expiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
-  expiryTimer.unref();
+  const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
+  // Vercel Hobby WebSocket invocations are capped at 300 seconds. Reconnect
+  // early so clients can restore their room membership and missed messages.
+  const functionLifetimeTimer=setTimeout(()=>socket.disconnect(true),4*60*1000);
+  sessionExpiryTimer.unref();
+  functionLifetimeTimer.unref();
   socket.use((_packet,next)=>{
     const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
     if(!active){socket.disconnect(true);return;}
@@ -812,7 +912,7 @@ io.on('connection',(socket)=>{
   socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
   socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
   socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const room=data?.channelId&&canReadChannel(data.channelId,user.id)?`channel:${data.channelId}`:data?.dmId&&canAccessDm(data.dmId,user.id)?`dm:${data.dmId}`:null;if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
-  socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{const channel=db.prepare('SELECT type FROM channels WHERE id=?').get(data?.channelId) as any;if(channel?.type!=='voice'||!canReadChannel(data?.channelId,user.id)){ack?.({ok:false,error:'Not authorized for this voice channel'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,...s.data.user}:null;}).filter(Boolean)});});
+  socket.on('voice:join',(data:{channelId:string},ack?:Function)=>{if(!canJoinVoiceChannel(data?.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}socket.join(`voice:${data.channelId}`);socket.to(`voice:${data.channelId}`).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});const peers=io.sockets.adapter.rooms.get(`voice:${data.channelId}`);ack?.({ok:true,participants:[...(peers||[])].filter(sid=>sid!==socket.id).map(sid=>{const s=io.sockets.sockets.get(sid);return s?{socketId:s.id,...s.data.user}:null;}).filter(Boolean)});});
   socket.on('voice:leave',(channelId:string)=>{
     if(typeof channelId!=='string')return;
     const room=`voice:${channelId}`;
@@ -820,10 +920,11 @@ io.on('connection',(socket)=>{
     socket.leave(room);
     socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
   });
-  socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{if(socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,...data});});
-  socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:user,payload:data.payload,channelId:data.channelId});}});
+  socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,...data});});
+  socket.on('webrtc:signal',(data:{toSocketId:string;payload:unknown;channelId:string})=>{if(canJoinVoiceChannel(data?.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`)&&typeof data.toSocketId==='string'){const target=io.sockets.sockets.get(data.toSocketId);if(target?.rooms.has(`voice:${data.channelId}`))target.emit('webrtc:signal',{fromSocketId:socket.id,fromUser:user,payload:data.payload,channelId:data.channelId});}});
   socket.on('disconnect',()=>{
-    clearTimeout(expiryTimer);
+    clearTimeout(sessionExpiryTimer);
+    clearTimeout(functionLifetimeTimer);
     for(const room of socket.rooms){if(room.startsWith('voice:'))socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});}
   });
 });

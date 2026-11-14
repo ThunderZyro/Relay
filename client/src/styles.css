@@ -1505,3 +1505,22 @@ body {
   .auth-simple { gap: 15px; }
   .auth-simple .auth-card { padding: 22px 18px; }
 }
+
+/* Simplified navigation: fewer competing destinations and quieter surfaces. */
+.side-more{padding:10px 14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+.side-more summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;padding:5px 0}
+.side-more summary::-webkit-details-marker{display:none}
+.side-more summary::after{content:"+";font-size:16px;color:var(--muted)}
+.side-more[open] summary::after{content:"−"}
+.side-more-links{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding-top:8px}
+.side-more-links a{display:flex;align-items:center;gap:7px;padding:8px;border-radius:6px;color:var(--muted);font-size:11px}
+.side-more-links a:hover{background:var(--panel-3);color:var(--text)}
+.home-nav{padding:12px 9px;border-bottom:1px solid var(--line)}
+.side-item{height:36px;border-radius:7px;font-size:13px}
+.side-item.selected{background:var(--panel-3);color:var(--text)}
+.side-item.selected svg{color:var(--text)}
+.dm-heading{font-size:10px;letter-spacing:.6px}
+.dm-item{height:38px;border-radius:7px}
+.side-panel{background:var(--panel)}
+.server-rail{background:var(--bg);border-right:1px solid var(--line)}
+.user-panel{background:var(--panel-2)}

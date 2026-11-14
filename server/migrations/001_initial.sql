@@ -1,4 +1,3 @@
-PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, email TEXT NOT NULL, username TEXT NOT NULL,
  password_hash TEXT NOT NULL, avatar TEXT, banner TEXT, bio TEXT NOT NULL DEFAULT '', status_text TEXT NOT NULL DEFAULT '',

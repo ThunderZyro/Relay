@@ -149,7 +149,7 @@ app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
   if (!parsed.success) return fail(res, 400, parsed.error.issues[0]?.message || 'Check your details.');
   const email = parsed.data.email.toLowerCase();
   const username = parsed.data.username;
-  if (db.prepare('SELECT 1 FROM users WHERE email=? OR username=? COLLATE NOCASE').get(email, username)) return fail(res, 409, 'That email or username is already in use.');
+  if (db.prepare('SELECT 1 FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(email, username)) return fail(res, 409, 'That email or username is already in use.');
   const userId = id();
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
   db.prepare('INSERT INTO users(id,email,username,password_hash) VALUES(?,?,?,?)').run(userId,email,username,passwordHash);
@@ -160,7 +160,7 @@ app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
 app.post('/api/auth/login', authLimiter, asyncRoute(async (req,res) => {
   const parsed = z.object({ login:z.string().min(1).max(254), password:z.string().min(1).max(128) }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,'Enter your email or username and password.');
-  const row = db.prepare('SELECT * FROM users WHERE email=? COLLATE NOCASE OR username=? COLLATE NOCASE').get(parsed.data.login,parsed.data.login) as any;
+  const row = db.prepare('SELECT * FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(parsed.data.login,parsed.data.login) as any;
   if (!row || !(await bcrypt.compare(parsed.data.password,row.password_hash))) return fail(res,401,'Those sign-in details do not match.');
   createSession(req,res,row.id);
   res.json({ user:{...userPublic(row),email:row.email} });
@@ -197,7 +197,7 @@ app.patch('/api/profile', requireAuth, (req: AuthedRequest,res) => {
   const parsed = z.object({ username:z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/).optional(), bio:z.string().max(300).optional(), status_text:z.string().max(80).optional(), avatar:z.string().max(500).nullable().optional(), banner:z.string().max(500).nullable().optional() }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,parsed.error.issues[0]?.message||'Invalid profile values.');
   const p=parsed.data;
-  if (p.username && db.prepare('SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id<>?').get(p.username,req.user!.id)) return fail(res,409,'That username is already taken.');
+  if (p.username && db.prepare('SELECT 1 FROM users WHERE LOWER(username)=LOWER(?) AND id<>?').get(p.username,req.user!.id)) return fail(res,409,'That username is already taken.');
   const keys=Object.keys(p) as (keyof typeof p)[];
   if (keys.length) {
     const sets=keys.map(k=>`${k}=?`).join(',');
@@ -264,7 +264,7 @@ app.get('/api/friends', requireAuth, (req: AuthedRequest,res) => {
 });
 app.post('/api/friends/request', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
   const parsed=z.object({username:z.string().min(3).max(24)}).safeParse(req.body); if(!parsed.success)return fail(res,400,'Enter a username.');
-  const target=db.prepare('SELECT id,username FROM users WHERE username=? COLLATE NOCASE').get(parsed.data.username) as any;
+  const target=db.prepare('SELECT id,username FROM users WHERE LOWER(username)=LOWER(?)').get(parsed.data.username) as any;
   if(!target)return fail(res,404,'No user has that username.'); if(target.id===req.user!.id)return fail(res,400,'You cannot add yourself.');
   if(blockedEither(req.user!.id,target.id))return fail(res,403,'A block prevents this request.');
   const existing=db.prepare('SELECT * FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)').get(req.user!.id,target.id,target.id,req.user!.id) as any;
@@ -316,7 +316,7 @@ function dmSummary(dmId: string,userId: string) {
   if(!row)return null;
   const peerIds=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(dmId,userId) as any[];
   if(peerIds.some(peer=>blockedEither(userId,peer.user_id)))return null;
-  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN datetime(u.last_seen)<datetime('now','-2 minutes') THEN 'offline' WHEN datetime(u.last_seen)<datetime('now','-60 seconds') AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
+  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
   return {...row,members};
 }
 app.get('/api/dms', requireAuth, (req: AuthedRequest,res) => {
@@ -402,7 +402,7 @@ app.get('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
   if(!s)return fail(res,404,'Server not found.'); const m=membership(s.id,req.user!.id); if(!m)return fail(res,403,'You are not a member of this server.');
   const categories=db.prepare('SELECT * FROM categories WHERE server_id=? ORDER BY position').all(s.id);
   const channels=db.prepare('SELECT * FROM channels WHERE server_id=? ORDER BY position').all(s.id);
-  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN datetime(u.last_seen)<datetime('now','-2 minutes') THEN 'offline' WHEN u.presence='online' AND datetime(u.last_seen)<datetime('now','-60 seconds') THEN 'idle' ELSE u.presence END AS presence,CASE WHEN u.activity_visible=0 THEN '' ELSE u.status_text END AS status_text,r.name AS role_name,m.role_id,m.timeout_until FROM memberships m JOIN users u ON u.id=m.user_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.server_id=? ORDER BY u.username`).all(s.id);
+  const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN u.presence='online' AND CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' THEN 'idle' ELSE u.presence END AS presence,CASE WHEN u.activity_visible=0 THEN '' ELSE u.status_text END AS status_text,r.name AS role_name,m.role_id,m.timeout_until FROM memberships m JOIN users u ON u.id=m.user_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.server_id=? ORDER BY u.username`).all(s.id);
   res.json({server:s,member:m,categories,channels,members});
 });
 app.patch('/api/servers/:serverId', requireAuth, (req: AuthedRequest,res) => {
@@ -505,7 +505,7 @@ app.delete('/api/servers/:serverId/members/:userId', requireAuth, (req: AuthedRe
   const actor=membership(req.params.serverId,req.user!.id); const target=membership(req.params.serverId,req.params.userId); if(!target)return fail(res,404,'Member not found.');
   if(s.owner_id!==req.user!.id && (target.position??0)>=(actor?.position??0))return fail(res,403,'You cannot remove an equal or higher role.');
   if((target.permissions||'').includes('manage_server')){const admins=(db.prepare(`SELECT COUNT(*) AS n FROM memberships m JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND r.permissions LIKE '%manage_server%'`).get(req.params.serverId) as any).n;if(admins<=1)return fail(res,400,'Keep at least one administrator in the server.');}
-  if(action==='ban')db.prepare('INSERT OR REPLACE INTO bans(server_id,user_id,moderator_id,reason) VALUES(?,?,?,?)').run(req.params.serverId,req.params.userId,req.user!.id,String(req.body?.reason||'').slice(0,200));
+  if(action==='ban')db.prepare('INSERT INTO bans(server_id,user_id,moderator_id,reason) VALUES(?,?,?,?) ON CONFLICT(server_id,user_id) DO UPDATE SET moderator_id=EXCLUDED.moderator_id,reason=EXCLUDED.reason').run(req.params.serverId,req.params.userId,req.user!.id,String(req.body?.reason||'').slice(0,200));
   db.prepare('DELETE FROM memberships WHERE server_id=? AND user_id=?').run(req.params.serverId,req.params.userId); res.json({ok:true,action});
 });
 app.post('/api/servers/:serverId/members/:userId/timeout', requireAuth, (req: AuthedRequest,res) => {
@@ -567,7 +567,7 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 
 // Messages and search
 function messageRows(whereSql:string, params:any[], limit=60) {
-  return db.prepare(`SELECT m.*,u.username,u.avatar,(SELECT json_group_array(json_object('emoji',r.emoji,'user_id',r.user_id)) FROM reactions r WHERE r.message_id=m.id) reactions
+  return db.prepare(`SELECT m.*,u.username,u.avatar,(SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions
     FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC LIMIT ?`).all(...params,limit).reverse().map((m:any)=>({...m,reactions:JSON.parse(m.reactions||'[]'),attachments:db.prepare('SELECT id,filename,mime,size FROM attachments WHERE message_id=?').all(m.id)}));
 }
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
@@ -692,10 +692,10 @@ app.post('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) => {
 app.delete('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) => {db.prepare('DELETE FROM event_rsvps WHERE event_id=? AND user_id=?').run(req.params.eventId,req.user!.id);res.json({ok:true});});
 
 // staged_uploads is intentionally private and only finalized when an authenticated message sends it.
- db.exec(`CREATE TABLE IF NOT EXISTS staged_uploads(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,filename TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,storage_name TEXT NOT NULL UNIQUE,created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+ // staged_uploads is created by the versioned PostgreSQL migration in db.ts.
 const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','video/mp4']);
 function cleanupExpiredStagedUploads() {
-  const expired=db.prepare("SELECT id,storage_name FROM staged_uploads WHERE created_at<=datetime('now', ?)").all(`-${stagedUploadTtlHours} hours`) as any[];
+  const expired=db.prepare("SELECT id,storage_name FROM staged_uploads WHERE created_at::timestamptz<=NOW()+?::interval").all(`-${stagedUploadTtlHours} hours`) as any[];
   if(!expired.length)return;
   const remove=db.transaction((rows:any[])=>{
     for(const row of rows){

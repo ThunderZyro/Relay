@@ -196,7 +196,7 @@ async function revokeChannelRooms(channel: {id:string;type:string}) {
 }
 async function deleteStoredObjects(storageNames: string[]) {
   const keys=[...new Set(storageNames.filter(Boolean))].filter(storageName=>path.basename(storageName)===storageName);
-  await Promise.all(keys.map(storageName=>deleteUpload(storageName).catch(error=>console.error('Stored upload cleanup failed.',error))));
+  await Promise.all(keys.map(storageName=>deleteUpload(storageName)));
 }
 function notify(userId: string, type: string, title: string, body: string, href: string) {
   const pref=db.prepare('SELECT data FROM settings WHERE user_id=?').get(userId) as any; let prefs:any={}; try{prefs=JSON.parse(pref?.data||'{}');}catch{}
@@ -548,9 +548,9 @@ app.delete('/api/servers/:serverId', requireAuth, asyncRoute(async (req,res) => 
   const members=db.prepare('SELECT user_id FROM memberships WHERE server_id=?').all(req.params.serverId) as any[];
   const channels=db.prepare('SELECT id,type FROM channels WHERE server_id=?').all(req.params.serverId) as any[];
   const files=db.prepare('SELECT a.storage_name FROM attachments a JOIN messages m ON m.id=a.message_id JOIN channels c ON c.id=m.channel_id WHERE c.server_id=?').all(req.params.serverId) as any[];
-  db.prepare('DELETE FROM servers WHERE id=?').run(req.params.serverId);
   await Promise.all(members.map(member=>revokeServerMemberRooms(member.user_id,channels)));
   await deleteStoredObjects(files.map((file:any)=>file.storage_name));
+  db.prepare('DELETE FROM servers WHERE id=?').run(req.params.serverId);
   res.json({ok:true});
 }));
 app.post('/api/servers/:serverId/leave', requireAuth, asyncRoute(async (req,res) => {
@@ -582,9 +582,9 @@ app.delete('/api/channels/:channelId', requireAuth, asyncRoute(async (req,res) =
   const c=db.prepare('SELECT * FROM channels WHERE id=?').get(req.params.channelId) as any; if(!c)return fail(res,404,'Channel not found.');
   if(!hasPermission(c.server_id,req.user!.id,'manage_channels'))return fail(res,403,'You do not have permission to manage channels.');
   const files=db.prepare('SELECT a.storage_name FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.channel_id=?').all(c.id) as any[];
-  db.prepare('DELETE FROM channels WHERE id=?').run(c.id);
   await revokeChannelRooms({id:c.id,type:c.type});
   await deleteStoredObjects(files.map((file:any)=>file.storage_name));
+  db.prepare('DELETE FROM channels WHERE id=?').run(c.id);
   res.json({ok:true});
 }));
 app.post('/api/servers/:serverId/categories', requireAuth, (req: AuthedRequest,res) => {
@@ -796,8 +796,8 @@ app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) =
   if(!canAccess)return fail(res,403,'Conversation access is required.');
   if(m.sender_id!==req.user!.id && !(serverId && hasPermission(serverId,req.user!.id,'manage_messages')))return fail(res,403,'You cannot delete this message.');
   const files=db.prepare('SELECT storage_name FROM attachments WHERE message_id=?').all(m.id) as any[];
-  db.prepare('DELETE FROM attachments WHERE message_id=?').run(m.id);
   await deleteStoredObjects(files.map((file:any)=>file.storage_name));
+  db.prepare('DELETE FROM attachments WHERE message_id=?').run(m.id);
   db.prepare('UPDATE messages SET deleted_at=?,content=? WHERE id=?').run(now(),'This message was deleted.',m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:deleted',{id:m.id}); res.json({ok:true});
 }));
 app.post('/api/messages/:messageId/report', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
@@ -880,25 +880,25 @@ app.delete('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) =>
 // staged_uploads is intentionally private and only finalized when an authenticated message sends it.
  // staged_uploads is created by the versioned PostgreSQL migration in db.ts.
 const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','video/mp4']);
-function cleanupExpiredStagedUploads() {
+async function cleanupExpiredStagedUploads() {
   const expired=db.prepare("SELECT id,storage_name FROM staged_uploads WHERE created_at::timestamptz<=NOW()+?::interval").all(`-${stagedUploadTtlHours} hours`) as any[];
-  if(!expired.length)return;
-  const remove=db.transaction((rows:any[])=>{
-    for(const row of rows){
-      const storageName=String(row.storage_name||'');
-      if(storageName && path.basename(storageName)===storageName)void deleteUpload(storageName).catch(error=>console.error('Expired upload cleanup failed.',error));
+  for(const row of expired){
+    const storageName=String(row.storage_name||'');
+    try {
+      if(storageName && path.basename(storageName)===storageName)await deleteUpload(storageName);
       db.prepare('DELETE FROM staged_uploads WHERE id=?').run(row.id);
+    } catch(error) {
+      console.error('Expired upload cleanup failed; the staged record will be retried.',error);
     }
-  });
-  remove(expired);
+  }
 }
 function userStoredUploadBytes(userId:string) {
   const staged=db.prepare('SELECT COALESCE(SUM(size),0) AS bytes FROM staged_uploads WHERE user_id=?').get(userId) as any;
   const attached=db.prepare('SELECT COALESCE(SUM(a.size),0) AS bytes FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.sender_id=?').get(userId) as any;
   return Number(staged?.bytes||0)+Number(attached?.bytes||0);
 }
-cleanupExpiredStagedUploads();
-const stagedUploadCleanupTimer=setInterval(()=>{try{cleanupExpiredStagedUploads();}catch(error){console.error('Staged upload cleanup failed.',error);}},60*60*1000);
+void cleanupExpiredStagedUploads().catch(error=>console.error('Staged upload cleanup failed.',error));
+const stagedUploadCleanupTimer=setInterval(()=>{void cleanupExpiredStagedUploads().catch(error=>console.error('Staged upload cleanup failed.',error));},60*60*1000);
 stagedUploadCleanupTimer.unref();
 const shutdownRelay=()=>{
   clearInterval(stagedUploadCleanupTimer);
@@ -911,7 +911,7 @@ process.once('SIGINT',shutdownRelay);
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:maxUpload,files:8},fileFilter:(_req,file,cb)=>{const ext=path.extname(file.originalname).toLowerCase();const ok=allowedMime.has(file.mimetype)&&!['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1'].includes(ext);const finish=cb as ((error: Error)=>void)&((error: null,acceptFile: boolean)=>void);if(ok)finish(null,true);else finish(new Error('This file type is not allowed.'));}});
 app.post('/api/uploads', requireAuth, interactionLimiter, upload.array('files',8), asyncRoute(async (req:AuthedRequest,res) => {
   const files=(req.files||[]) as Express.Multer.File[];
-  cleanupExpiredStagedUploads();
+  await cleanupExpiredStagedUploads();
   const incomingBytes=files.reduce((total,file)=>total+file.size,0);
   if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes)return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
   const saved:any[]=[];
@@ -942,7 +942,7 @@ app.get('/api/uploads/:uploadId', requireAuth, asyncRoute(async (req: AuthedRequ
 }));
 
 // Presence heartbeat and authorized Socket.IO rooms.
-app.post('/api/presence/heartbeat', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE users SET last_seen=?,presence=CASE WHEN presence=\'offline\' THEN \'online\' ELSE presence END WHERE id=?').run(now(),req.user!.id);res.json({ok:true});});
+app.post('/api/presence/heartbeat', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(),req.user!.id);res.json({ok:true});});
 function socketUser(cookieHeader='') {
   const match=cookieHeader.match(/(?:^|;\s*)relay_session=([^;]+)/); if(!match)return null;
   let token='';try{token=decodeURIComponent(match[1]);}catch{return null;}

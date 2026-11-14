@@ -215,6 +215,26 @@ function userPublic(row: any) {
 function blockedEither(a: string, b: string) {
   return !!db.prepare('SELECT 1 FROM blocks WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?)').get(a,b,b,a);
 }
+async function revokeDmMemberRoom(dmId:string,userId:string) {
+  const room=`dm:${dmId}`;
+  const sockets=await io.in(`user:${userId}`).fetchSockets();
+  for(const socket of sockets)if(socket.rooms.has(room))socket.leave(room);
+}
+async function revokeDirectMessagesBetween(firstUserId:string,secondUserId:string) {
+  const conversations=db.prepare(`SELECT d.id FROM dms d
+    JOIN dm_members a ON a.dm_id=d.id AND a.user_id=?
+    JOIN dm_members b ON b.dm_id=d.id AND b.user_id=?
+    WHERE d.is_group=0`).all(firstUserId,secondUserId) as any[];
+  if(!conversations.length)return;
+  const [firstSockets,secondSockets]=await Promise.all([
+    io.in(`user:${firstUserId}`).fetchSockets(),
+    io.in(`user:${secondUserId}`).fetchSockets()
+  ]);
+  for(const conversation of conversations){
+    const room=`dm:${conversation.id}`;
+    for(const socket of [...firstSockets,...secondSockets])if(socket.rooms.has(room))socket.leave(room);
+  }
+}
 function emitFriendUpdate(...userIds: string[]) {
   for (const userId of new Set(userIds.filter(Boolean))) io.to(`user:${userId}`).emit('friends:updated');
 }
@@ -421,16 +441,15 @@ app.get('/api/blocks', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare('SELECT b.blocked_id,u.username,u.avatar FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.blocker_id=?').all(req.user!.id) as any[];
   res.json({blocks:rows.map(r=>({id:r.blocked_id,username:r.username,avatar:r.avatar}))});
 });
-app.post('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => {
+app.post('/api/blocks/:userId', requireAuth, asyncRoute(async (req,res) => {
   if(req.params.userId===req.user!.id)return fail(res,400,'You cannot block yourself.');
   if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(req.params.userId))return fail(res,404,'User not found.');
   db.prepare('INSERT INTO blocks(blocker_id,blocked_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.user!.id,req.params.userId);
   db.prepare('DELETE FROM friendships WHERE (requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?)').run(req.user!.id,req.params.userId,req.params.userId,req.user!.id);
-  disconnectUserSockets(req.user!.id);
-  disconnectUserSockets(req.params.userId);
+  await revokeDirectMessagesBetween(req.user!.id,req.params.userId);
   emitFriendUpdate(req.user!.id,req.params.userId);
   res.json({ok:true});
-});
+}));
 app.delete('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => { db.prepare('DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?').run(req.user!.id,req.params.userId); res.json({ok:true}); });
 
 function canAccessDm(dmId: string,userId: string) {
@@ -488,13 +507,13 @@ app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: Authed
   if(target.dm_privacy==='friends' && !db.prepare(`SELECT 1 FROM friendships WHERE status='accepted' AND ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))`).get(req.user!.id,parsed.data.userId,parsed.data.userId,req.user!.id))return fail(res,403,'You must be friends before adding this user.');
   db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
-app.delete('/api/dms/:dmId/members/:userId', requireAuth, (req: AuthedRequest,res) => {
+app.delete('/api/dms/:dmId/members/:userId', requireAuth, asyncRoute(async (req,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
   const dm=db.prepare('SELECT created_by,is_group FROM dms WHERE id=?').get(req.params.dmId) as any; if(!dm)return fail(res,404,'Conversation not found.'); if(req.params.userId!==req.user!.id && (!dm.is_group || dm.created_by!==req.user!.id))return fail(res,403,'Only the group creator can remove another member.');
   const removed=db.prepare('DELETE FROM dm_members WHERE dm_id=? AND user_id=?').run(req.params.dmId,req.params.userId);
-  if(removed.changes)disconnectUserSockets(req.params.userId);
+  if(removed.changes)await revokeDmMemberRoom(req.params.dmId,req.params.userId);
   res.json({ok:true});
-});
+}));
 
 // Servers, roles, channels, and moderation
 app.get('/api/servers', requireAuth, (req: AuthedRequest,res) => {

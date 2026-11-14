@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 app.setName('Relay');
+app.setPath('userData', path.join(app.getPath('appData'), 'Relay'));
 app.setAppUserModelId('com.relay.platform');
 
 const hasSingleInstance = app.requestSingleInstanceLock();
@@ -20,6 +21,7 @@ const defaultAppUrl = 'https://relay-platform-zyro-d26e.vercel.app';
 const configuredAppUrl = process.env.RELAY_APP_URL || defaultAppUrl;
 let appUrl;
 let appOrigin;
+let configurationError = null;
 
 try {
   appUrl = new URL(configuredAppUrl);
@@ -31,7 +33,7 @@ try {
 } catch (error) {
   appUrl = new URL(defaultAppUrl);
   appOrigin = appUrl.origin;
-  process.nextTick(() => showFatal('Invalid Relay URL', error instanceof Error ? error.message : String(error)));
+  configurationError = error instanceof Error ? error.message : String(error);
 }
 
 function writeLog(message) {
@@ -194,11 +196,14 @@ function configureApplicationMenu() {
 }
 
 function configurePermissions() {
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === 'media' || permission === 'notifications');
+  const allowedPermissions = new Set(['media','notifications']);
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    let trustedOrigin = false;
+    try { trustedOrigin = new URL(details.requestingUrl).origin === appOrigin; } catch {}
+    callback(trustedOrigin && allowedPermissions.has(permission));
   });
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return permission === 'media' || permission === 'notifications';
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    return requestingOrigin === appOrigin && allowedPermissions.has(permission);
   });
 }
 
@@ -239,7 +244,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   try {
-    app.setPath('userData', path.join(app.getPath('appData'), 'Relay'));
+    if(configurationError)throw new Error(configurationError);
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
     logFile = path.join(app.getPath('userData'), 'relay-desktop.log');
     configureApplicationMenu();

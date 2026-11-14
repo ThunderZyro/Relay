@@ -59,9 +59,11 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
 
 function useRoomMessages(id:string|undefined,isDm:boolean){
  const [messages,setMessages]=useState<ChatMessage[]>([]);const [loading,setLoading]=useState(true);const [hasOlder,setHasOlder]=useState(false);const [loadingOlder,setLoadingOlder]=useState(false);const [socket,setSocket]=useState<Socket|null>(null);const [typing,setTyping]=useState('');const toast=useToast();const typingTimer=useRef<number|undefined>(undefined);
- const load=async()=>{if(!id){setMessages([]);setLoading(false);return;}setLoading(true);try{const route=isDm?`/dms/${id}/messages`:`/channels/${id}/messages`;const r=await api<{messages:ChatMessage[]}>(route);setMessages(r.messages||[]);setHasOlder((r.messages||[]).length===60);}catch(e:any){toast.show(e.message,'error');setMessages([]);}finally{setLoading(false);}};
+ const route=isDm?`/dms/${id}/messages`:`/channels/${id}/messages`;
+ const load=async()=>{if(!id){setMessages([]);setLoading(false);return;}setLoading(true);try{const r=await api<{messages:ChatMessage[]}>(route);setMessages(r.messages||[]);setHasOlder((r.messages||[]).length===60);}catch(e:any){toast.show(e.message,'error');setMessages([]);}finally{setLoading(false);}};
+ const refreshLatest=async()=>{if(!id)return;try{const r=await api<{messages:ChatMessage[]}>(route);const latest=r.messages||[];setMessages(current=>{const merged=new Map(current.map(message=>[message.id,message]));for(const message of latest)merged.set(message.id,message);return [...merged.values()].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime());});if(latest.length===60)setHasOlder(true);}catch{/* Socket reconnect/polling is best-effort; the next cycle retries. */}};
  useEffect(()=>{void load();},[id,isDm]);
- useEffect(()=>{if(!id){setSocket(null);return;}const live:Socket=io(apiOrigin,{withCredentials:true});setSocket(live);const event=isDm?'room:join-dm':'room:join-channel';live.on('connect',()=>live.emit(event,id));live.on('message:new',(m:ChatMessage)=>setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m]));live.on('message:updated',(m:ChatMessage)=>setMessages(v=>v.map(x=>x.id===m.id?m:x)));live.on('message:deleted',(m:{id:string})=>setMessages(v=>v.filter(x=>x.id!==m.id)));live.on('message:reactions',(r:{messageId:string;reactions:ChatMessage['reactions']})=>setMessages(v=>v.map(x=>x.id===r.messageId?{...x,reactions:r.reactions}:x)));live.on('typing',(t:any)=>{if(typingTimer.current)window.clearTimeout(typingTimer.current);setTyping(t.active?`${t.username} is typing…`: '');if(t.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);});return()=>{live.disconnect();if(typingTimer.current)window.clearTimeout(typingTimer.current);setSocket(current=>current===live?null:current);setTyping('');};},[id,isDm]);
+ useEffect(()=>{if(!id){setSocket(null);return;}const live:Socket=io(apiOrigin,{withCredentials:true,reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});setSocket(live);const event=isDm?'room:join-dm':'room:join-channel';live.on('connect',()=>{live.emit(event,id);void refreshLatest();});live.on('message:new',(m:ChatMessage)=>setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime())));live.on('message:updated',(m:ChatMessage)=>setMessages(v=>v.map(x=>x.id===m.id?m:x)));live.on('message:deleted',(m:{id:string})=>setMessages(v=>v.filter(x=>x.id!==m.id)));live.on('message:reactions',(r:{messageId:string;reactions:ChatMessage['reactions']})=>setMessages(v=>v.map(x=>x.id===r.messageId?{...x,reactions:r.reactions}:x)));live.on('typing',(t:any)=>{if(typingTimer.current)window.clearTimeout(typingTimer.current);setTyping(t.active?`${t.username} is typing…`: '');if(t.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);});const syncTimer=window.setInterval(()=>void refreshLatest(),5000);return()=>{window.clearInterval(syncTimer);live.disconnect();if(typingTimer.current)window.clearTimeout(typingTimer.current);setSocket(current=>current===live?null:current);setTyping('');};},[id,isDm]);
  const loadOlder=async()=>{if(!id||!hasOlder||loadingOlder||!messages.length)return;setLoadingOlder(true);try{const route=isDm?'/dms/'+id+'/messages':'/channels/'+id+'/messages';const older=(await api<{messages:ChatMessage[]}>(route+'?before='+encodeURIComponent(messages[0].created_at))).messages||[];setMessages(current=>[...older.filter(m=>!current.some(existing=>existing.id===m.id)),...current]);setHasOlder(older.length===60);}catch(e:any){toast.show(e.message,'error');}finally{setLoadingOlder(false);}};
  const add=(message:ChatMessage)=>setMessages(v=>v.some(m=>m.id===message.id)?v:[...v,message]);
  return {messages,setMessages,loading,hasOlder,loadingOlder,loadOlder,typing,socket,add,reload:load};
@@ -139,11 +141,17 @@ function VoiceJoin({channelId}:{channelId:string}){
    if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microphone access requires HTTPS or localhost and a supported browser.');
    const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});localStreamRef.current=stream;
    const live=io(apiOrigin,{withCredentials:true});socketRef.current=live;
-   live.on('connect',()=>live.emit('voice:join',{channelId},async(response:any)=>{
-    if(!response?.ok){toast.show(response?.error||'You cannot join this voice channel.','error');leave();setJoining(false);return;}
-    const participants=response.participants||[];setPeers(participants);setJoined(true);setJoining(false);
-    for(const participant of participants){try{await createPeer(participant.socketId,true);}catch(error:any){toast.show(error.message||'Could not establish a voice connection.','error');}}
-   }));
+   const restoreVoiceRoom=()=>{
+    for(const connection of connectionsRef.current.values())connection.close();
+    connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);
+    live.emit('voice:join',{channelId},async(response:any)=>{
+     if(!response?.ok){toast.show(response?.error||'You cannot join this voice channel.','error');leave();setJoining(false);return;}
+     const participants=response.participants||[];setPeers(participants);setJoined(true);setJoining(false);
+     for(const participant of participants){try{await createPeer(participant.socketId,true);}catch(error:any){toast.show(error.message||'Could not establish a voice connection.','error');}}
+    });
+   };
+   live.on('connect',restoreVoiceRoom);
+   live.on('disconnect',()=>{for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);});
    live.on('voice:participant',(participant:any)=>{
     if(participant.state==='left'){removePeer(participant.socketId);return;}
     setPeers(current=>[...current.filter(peer=>peer.socketId!==participant.socketId),participant]);

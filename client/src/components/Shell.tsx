@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {Link,Outlet,useLocation,useNavigate} from 'react-router-dom';
 import {io} from 'socket.io-client';
-import {Activity, Bell, CalendarDays, Compass, Crown, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, Plus, Search, Settings, Shield, Store, Users, X} from 'lucide-react';
+import {Activity, Bell, CalendarDays, Compass, Crown, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, Plus, Search, Settings, Shield, Store, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus} from 'lucide-react';
 import {api,apiOrigin,post,del} from '../api';
 import {useAuth,useToast,announceAuthChange} from '../state';
 import {Avatar,Button,Field,Modal,SearchInput} from './ui';
@@ -10,7 +10,7 @@ type Server={id:string;name:string;description:string;icon?:string|null;role_nam
 type Dm={id:string;name?:string|null;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string};
 export default function Shell(){
  const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const location=useLocation();
- const [servers,setServers]=useState<Server[]>([]);const [dms,setDms]=useState<Dm[]>([]);const [notifications,setNotifications]=useState<any[]>([]);const [searchOpen,setSearchOpen]=useState(false);const [search,setSearch]=useState('');const [searchResults,setSearchResults]=useState<any>(null);const [notifyOpen,setNotifyOpen]=useState(false);const [createOpen,setCreateOpen]=useState(false);const [serverName,setServerName]=useState('');const [serverDescription,setServerDescription]=useState('');const [mobileNav,setMobileNav]=useState(false);const [keybinds,setKeybinds]=useState({focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'});
+ const [servers,setServers]=useState<Server[]>([]);const [dms,setDms]=useState<Dm[]>([]);const [notifications,setNotifications]=useState<any[]>([]);const [searchOpen,setSearchOpen]=useState(false);const [search,setSearch]=useState('');const [searchResults,setSearchResults]=useState<any>(null);const [notifyOpen,setNotifyOpen]=useState(false);const [createOpen,setCreateOpen]=useState(false);const [serverName,setServerName]=useState('');const [serverDescription,setServerDescription]=useState('');const [mobileNav,setMobileNav]=useState(false);const [dmQuery,setDmQuery]=useState('');const [dmScope,setDmScope]=useState<'all'|'groups'|'online'>('all');const [keybinds,setKeybinds]=useState({focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'});
  const serverMatch=location.pathname.match(/^\/channels\/([^/]+)(?:\/([^/]+))?/);const activeServer=serverMatch&&serverMatch[1]!=='@me'?serverMatch[1]:null;
  const [serverInfo,setServerInfo]=useState<any>(null);
  const load=async()=>{try{const [s,d,n]=await Promise.all([api<{servers:Server[]}>('/servers'),api<{conversations:Dm[]}>('/dms'),api<{notifications:any[]}>('/notifications')]);setServers(s.servers);setDms(d.conversations);setNotifications(n.notifications);}catch(e:any){toast.show(e.message,'error');}};
@@ -26,6 +26,7 @@ export default function Shell(){
  const logout=async()=>{try{await post('/auth/logout');setUser(null);announceAuthChange();navigate('/login');}catch(e:any){toast.show(e.message,'error');}};
  const markAll=async()=>{try{await post('/notifications/read-all');setNotifications(v=>v.map(n=>({...n,read_at:new Date().toISOString()})));}catch(e:any){toast.show(e.message,'error');}};
  const unread=notifications.filter(n=>!n.read_at).length;
+ const filteredDms=dms.filter(dm=>{const others=dm.members.filter(m=>m.id!==user?.id);const label=(dm.name||others.map(m=>m.username).join(', ')).toLowerCase();const matches=label.includes(dmQuery.trim().toLowerCase());const group=!!dm.is_group||others.length>1;const online=others.some(m=>m.presence==='online');return matches&&(dmScope==='all'||(dmScope==='groups'&&group)||(dmScope==='online'&&online));});
  const selectedDm=location.pathname.match(/^\/channels\/@me\/([^/]+)/)?.[1];
  return <div className="app-shell">
    <div className={`server-rail ${mobileNav?'show':''}`}>
@@ -39,13 +40,14 @@ export default function Shell(){
      <div className="side-top"><Link to="/home" className="brand"><span className="brand-mark">R</span><span>relay</span></Link><button className="mobile-close icon-btn" onClick={()=>setMobileNav(false)} aria-label="Close navigation"><X size={19}/></button></div>
      {activeServer&&serverInfo?.server?<>
        <div className="server-heading"><div><strong>{serverInfo.server.name}</strong><small>{serverInfo.server.description||'Community server'}</small></div><button className="icon-btn" title="Server settings" onClick={()=>navigate(`/server/${activeServer}/settings/overview`)}><Settings size={17}/></button></div>
-       <div className="side-scroll"><div className="section-label">CHANNELS <button onClick={()=>navigate(`/server/${activeServer}/settings/overview`)} aria-label="Manage channels"><Plus size={14}/></button></div>
-       {(serverInfo.categories||[]).map((cat:any)=><div key={cat.id}><div className="category-label">{cat.name}</div>{(serverInfo.channels||[]).filter((c:any)=>c.category_id===cat.id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?'◖':'#'}</span>{c.name}</Link>)}</div>)}
-       {(serverInfo.channels||[]).filter((c:any)=>!c.category_id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`}><span className="channel-symbol">#</span>{c.name}</Link>)}
-       <button className="side-action" onClick={()=>navigate(`/server/${activeServer}/settings/overview`)}><Settings size={15}/> Server settings</button>
-       <button className="side-action" onClick={async()=>{try{await post(`/servers/${activeServer}/leave`);navigate('/home');toast.show('Left server.','success');}catch(e:any){toast.show(e.message,'error');}}}>Leave server</button>
-       <div className="section-label spacer">MEMBERS · {serverInfo.members?.length||0}</div>
-       {serverInfo.members?.slice(0,40).map((m:any)=><Link key={m.id} to={`/profile/${m.id}`} className="member-row"><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name}</small></Link>)}
+       <div className="side-scroll server-sidebar-scroll">
+         <div className="channel-nav-title"><span>CHANNELS</span><button onClick={()=>navigate(`/server/${activeServer}/settings/channels`)} aria-label="Manage channels" title="Manage channels"><Plus size={15}/></button></div>
+         {(serverInfo.categories||[]).map((cat:any)=><details className="channel-category" key={cat.id} open><summary><ChevronDown size={13}/><span>{cat.name}</span><button onClick={e=>{e.preventDefault();navigate(`/server/${activeServer}/settings/channels`);}} aria-label={`Add channel to ${cat.name}`}><Plus size={13}/></button></summary>{(serverInfo.channels||[]).filter((c:any)=>c.category_id===cat.id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?<Volume2 size={15}/>:c.type==='announcement'?<Megaphone size={15}/>:<Hash size={15}/>}</span>{c.name}</Link>)}</details>)}
+         {(serverInfo.channels||[]).filter((c:any)=>!c.category_id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?<Volume2 size={15}/>:c.type==='announcement'?<Megaphone size={15}/>:<Hash size={15}/>}</span>{c.name}</Link>)}
+         <button className="side-action" onClick={()=>navigate(`/server/${activeServer}/settings/overview`)}><Settings size={15}/> Server settings</button>
+         <button className="side-action" onClick={async()=>{try{await post(`/servers/${activeServer}/leave`);navigate('/channels/@me');toast.show('Left server.','success');}catch(e:any){toast.show(e.message,'error');}}}>Leave server</button>
+         <div className="section-label spacer">MEMBERS · {serverInfo.members?.length||0}</div>
+         {serverInfo.members?.slice(0,80).map((m:any)=><Link key={m.id} to={`/profile/${m.id}`} className="member-row"><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name}</small></Link>)}
        </div>
      </>:<>
        <div className="home-nav">
@@ -54,8 +56,23 @@ export default function Shell(){
          <Link to="/friends" className={`side-item ${location.pathname==='/friends'?'selected':''}`} onClick={()=>setMobileNav(false)}><Users size={17}/> Friends</Link>
          <Link to="/discover" className={`side-item ${location.pathname==='/discover'?'selected':''}`} onClick={()=>setMobileNav(false)}><Compass size={17}/> Communities</Link>
        </div>
-       <div className="dm-heading"><span>RECENT CHATS</span><button onClick={()=>navigate('/friends')} aria-label="Start a conversation"><Plus size={16}/></button></div>
-       <div className="dm-list">{dms.slice(0,12).map(dm=>{const other=dm.members.find(m=>m.id!==user?.id);return <Link key={dm.id} to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`}><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="sm" presence={other?.presence}/><span>{dm.name||dm.members.filter(m=>m.id!==user?.id).map(m=>m.username).join(', ')}</span></Link>;})}</div>
+       <div className="dm-heading"><div><span>YOUR MESSAGES</span><small>{dms.length} conversations</small></div><button onClick={()=>navigate('/friends')} aria-label="Start a conversation" title="New message"><MessageSquarePlus size={17}/></button></div>
+       <div className="dm-tools">
+         <label className="dm-search"><Search size={15}/><input value={dmQuery} onChange={e=>setDmQuery(e.target.value)} placeholder="Search chats"/></label>
+         <div className="dm-filters" role="group" aria-label="Filter conversations">
+           <button className={dmScope==='all'?'active':''} onClick={()=>setDmScope('all')}>All</button>
+           <button className={dmScope==='groups'?'active':''} onClick={()=>setDmScope('groups')}>Groups</button>
+           <button className={dmScope==='online'?'active':''} onClick={()=>setDmScope('online')}>Online</button>
+         </div>
+       </div>
+       <div className="dm-list">
+         {filteredDms.slice(0,60).map(dm=>{const others=dm.members.filter(m=>m.id!==user?.id);const other=others[0];const label=dm.name||others.map(m=>m.username).join(', ');const group=!!dm.is_group||others.length>1;return <Link key={dm.id} to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`} onClick={()=>setMobileNav(false)}>
+           <span className="dm-avatar-wrap"><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="md" presence={!group?other?.presence:undefined}/>{group&&<i>{others.length+1}</i>}</span>
+           <span className="dm-item-copy"><b>{label}</b><small>{typeof dm.last_message==='string'&&dm.last_message.trim()?dm.last_message:group?'Group conversation':'Open conversation'}</small></span>
+           <span className="dm-item-meta">{group&&<UsersRound size={12}/>}</span>
+         </Link>;})}
+         {!filteredDms.length&&<div className="dm-empty">{dmQuery?'No chats match that search.':dmScope==='groups'?'No group conversations yet.':dmScope==='online'?'No conversations with someone online.':'Your conversations will appear here.'}</div>}
+       </div>
        <details className="side-more">
          <summary>More</summary>
          <div className="side-more-links">

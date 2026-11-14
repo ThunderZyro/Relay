@@ -962,20 +962,39 @@ app.post('/api/uploads', requireAuth, interactionLimiter, requirePersistentUploa
   const files=(req.files||[]) as Express.Multer.File[];
   await cleanupExpiredStagedUploads();
   const incomingBytes=files.reduce((total,file)=>total+file.size,0);
-  if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes)return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
+  const batch=files.map(file=>({file,id:id(),storageKey:crypto.randomUUID()}));
+  // Reserve quota before any asynchronous object-store work. The advisory lock
+  // is shared by every Relay instance, so two servers cannot approve the same
+  // user's remaining storage at the same time.
+  const reserved=db.transaction(()=>{
+    db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(req.user!.id);
+    if(userStoredUploadBytes(req.user!.id)+incomingBytes>maxUserStorageBytes)return false;
+    const insert=db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)');
+    for(const item of batch){
+      const file=item.file;
+      insert.run(item.id,req.user!.id,path.basename(file.originalname).slice(0,180),file.mimetype,file.size,item.storageKey);
+    }
+    return true;
+  })();
+  if(!reserved)return fail(res,413,`Your Relay storage quota is ${Math.floor(maxUserStorageBytes/1024/1024)} MB. Delete old attachments or wait for staged uploads to expire.`);
   const saved:any[]=[];
-  const createdKeys:string[]=[];
   try {
-    for(const file of files){
-      const key=await storeUpload(file.buffer,file.mimetype),uid=id();
-      createdKeys.push(key);
-      db.prepare('INSERT INTO staged_uploads(id,user_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)')
-        .run(uid,req.user!.id,path.basename(file.originalname).slice(0,180),file.mimetype,file.size,key);
-      saved.push({id:uid,filename:path.basename(file.originalname),mime:file.mimetype,size:file.size,url:`/api/uploads/${uid}`});
+    for(const item of batch){
+      await storeUpload(item.file.buffer,item.file.mimetype,item.storageKey);
+      const file=item.file;
+      saved.push({id:item.id,filename:path.basename(file.originalname),mime:file.mimetype,size:file.size,url:`/api/uploads/${item.id}`});
     }
   } catch(error) {
-    for(const key of createdKeys)void deleteUpload(key).catch(()=>{});
-    for(const item of saved)db.prepare('DELETE FROM staged_uploads WHERE id=?').run(item.id);
+    // Keep any reservation whose object could not be deleted. The normal
+    // expiry cleanup can retry it instead of silently orphaning stored data.
+    for(const item of batch){
+      try {
+        await deleteUpload(item.storageKey);
+        db.prepare('DELETE FROM staged_uploads WHERE id=? AND user_id=?').run(item.id,req.user!.id);
+      } catch(cleanupError) {
+        console.error('Failed to clean up a reserved upload after storage failed.',cleanupError);
+      }
+    }
     throw error;
   }
   res.status(201).json({uploads:saved,limitBytes:maxUpload,storageLimitBytes:maxUserStorageBytes,persistent:persistentStorageEnabled});

@@ -756,6 +756,9 @@ app.delete('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => 
   const canAccess=m.channel_id?canReadChannel(m.channel_id,req.user!.id):canAccessDm(m.dm_id,req.user!.id);
   if(!canAccess)return fail(res,403,'Conversation access is required.');
   if(m.sender_id!==req.user!.id && !(serverId && hasPermission(serverId,req.user!.id,'manage_messages')))return fail(res,403,'You cannot delete this message.');
+  const files=db.prepare('SELECT storage_name FROM attachments WHERE message_id=?').all(m.id) as any[];
+  db.prepare('DELETE FROM attachments WHERE message_id=?').run(m.id);
+  deleteStoredObjects(files.map((file:any)=>file.storage_name));
   db.prepare('UPDATE messages SET deleted_at=?,content=? WHERE id=?').run(now(),'This message was deleted.',m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:deleted',{id:m.id}); res.json({ok:true});
 });
 app.post('/api/messages/:messageId/report', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {

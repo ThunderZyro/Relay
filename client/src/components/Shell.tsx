@@ -7,7 +7,7 @@ import {useAuth,useToast,announceAuthChange} from '../state';
 import {Avatar,Button,Field,Modal,SearchInput} from './ui';
 
 type Server={id:string;name:string;description:string;icon?:string|null;role_name?:string};
-type Dm={id:string;name?:string|null;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string};
+type Dm={id:string;name?:string|null;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string;is_group?:boolean};
 export default function Shell(){
  const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const location=useLocation();
  const [servers,setServers]=useState<Server[]>([]);const [dms,setDms]=useState<Dm[]>([]);const [notifications,setNotifications]=useState<any[]>([]);const [searchOpen,setSearchOpen]=useState(false);const [search,setSearch]=useState('');const [searchResults,setSearchResults]=useState<any>(null);const [notifyOpen,setNotifyOpen]=useState(false);const [createOpen,setCreateOpen]=useState(false);const [serverName,setServerName]=useState('');const [serverDescription,setServerDescription]=useState('');const [mobileNav,setMobileNav]=useState(false);const [dmQuery,setDmQuery]=useState('');const [dmScope,setDmScope]=useState<'all'|'groups'|'online'>('all');const [keybinds,setKeybinds]=useState({focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'});

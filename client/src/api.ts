@@ -6,6 +6,8 @@ type RequestOptions = { method?: string; body?: unknown; headers?: HeadersInit }
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const url = `${apiBase}${path.startsWith('/') ? path : `/${path}`}`;
   const headers = new Headers(options.headers || {});
+  const method = (options.method || 'GET').toUpperCase();
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('X-Relay-Request', '1');
   let body: BodyInit | undefined;
   if (options.body instanceof FormData || options.body instanceof Blob) {
     body = options.body;
@@ -15,7 +17,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
   let response: Response;
   try {
-    response = await fetch(url, { method: options.method || 'GET', credentials: 'include', headers, body });
+    response = await fetch(url, { method, credentials: 'include', headers, body });
   } catch {
     throw new Error('Relay could not reach the server. Check the API URL and whether the server is running.');
   }

@@ -1,3 +1,6 @@
+const fs = require('node:fs');
+const path = require('node:path');
+
 const owner = process.env.RELAY_GITHUB_OWNER || 'CHANGE_ME_GITHUB_OWNER';
 const repo = process.env.RELAY_GITHUB_REPO || 'relay-platform';
 
@@ -5,12 +8,8 @@ module.exports = {
   appId: 'com.relay.platform',
   productName: 'Relay',
   executableName: 'Relay',
-  // Pin the app directory to the repository root. electron-builder must stage
-  // the root package.json beside desktop/main.cjs in resources/app.
+  // Pin the app directory to the repository root.
   directories: { app: '.', output: 'release/desktop' },
-  // Use an explicit catch-all pattern. A positive custom files list replaces
-  // electron-builder's default **/* pattern; keep the Electron entry and app
-  // manifest in the app bundle, while excluding generated staging folders.
   files: [
     '**/*',
     '!desktop-runtime/**',
@@ -18,6 +17,24 @@ module.exports = {
     '!release/**',
     '!**/*.map'
   ],
+  // electron-builder is currently omitting the root manifest from
+  // resources/app even though it is present in the source tree. Restore it
+  // after the app files are copied and before installer generation.
+  afterPack: async (context) => {
+    if (context.electronPlatformName !== 'win32') return;
+    const appDir = path.join(context.appOutDir, 'resources', 'app');
+    const sourceManifest = path.resolve(__dirname, '..', 'package.json');
+    const targetManifest = path.join(appDir, 'package.json');
+    if (!fs.existsSync(sourceManifest)) {
+      throw new Error(`Relay app manifest source is missing: ${sourceManifest}`);
+    }
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.copyFileSync(sourceManifest, targetManifest);
+    if (!fs.existsSync(targetManifest)) {
+      throw new Error(`Relay app manifest was not staged: ${targetManifest}`);
+    }
+    console.log(`Staged Electron app manifest: ${targetManifest}`);
+  },
   extraResources: [
     { from: 'desktop-runtime/node.exe', to: 'runtime/node.exe' },
     { from: 'desktop-stage/node_modules', to: 'relay/node_modules' },

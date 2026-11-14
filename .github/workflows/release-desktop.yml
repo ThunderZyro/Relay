@@ -1,9 +1,14 @@
 name: Build Relay Desktop
 
 on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'client/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/release-desktop.yml'
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -16,10 +21,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -33,37 +40,37 @@ jobs:
             'server/package.json',
             'desktop/main.cjs',
             'desktop/electron-builder.config.cjs',
-            'scripts/prepare-desktop.mjs',
             'shared/types.ts'
           )
           $missing = @($required | Where-Object { -not (Test-Path $_) })
           if ($missing.Count -gt 0) {
-            Write-Error ("The repository is missing required Relay source files: " + ($missing -join ', ') + ". Upload the client, server, desktop, scripts, and shared folders to the repository root.")
-            exit 1
+            throw ("The repository is missing required Relay source files: " + ($missing -join ', '))
           }
 
-      - name: Install dependencies on GitHub
-        run: npm install --no-audit --no-fund
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
       - name: Build and test Relay
         run: |
           npm run build
           npm test
 
-      - name: Prepare bundled local runtime
-        run: npm run desktop:prepare
-
-      - name: Build Windows installer (do not publish from electron-builder)
+      - name: Build Windows installer
         run: npx electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never
 
       - name: Publish installer to GitHub Release
+        if: github.event_name != 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           $version = node -p "require('./package.json').version"
           $tag = "v$version"
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $tag) {
+            throw "Tag $($env:GITHUB_REF_NAME) must match package.json version $tag."
+          }
           $assets = @(
             Get-ChildItem 'release/desktop/Relay-Setup-*.exe' -ErrorAction SilentlyContinue
             Get-ChildItem 'release/desktop/*.blockmap' -ErrorAction SilentlyContinue
@@ -85,7 +92,7 @@ jobs:
 
       - name: Keep installer artifacts available
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: relay-desktop-windows
           path: release/desktop/*

@@ -256,6 +256,10 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
       method:'POST',cookie:aliceCookie,body:{minutes:5}
     });
     assert.equal(setSeniorTimeout.response.status,200);
+    const blockedByTimeout=await request(port,`/channels/${serverResult.data.channelId}/messages`,{
+      method:'POST',cookie:daveCookie,body:{content:'This should be blocked during a server timeout.'}
+    });
+    assert.equal(blockedByTimeout.response.status,403,'server timeouts must block channel messages');
     const removeSeniorTimeout=await request(port,`/servers/${serverResult.data.server.id}/members/${daveRegistration.data.user.id}/timeout`,{
       method:'DELETE',cookie:bobCookie
     });
@@ -326,6 +330,8 @@ test('validates accounts, bounds invites, enforces DM privacy and permissions, a
     const aliceDmHistory = await request<{ messages: Array<{ content: string }> }>(port, `/dms/${dm.data.conversation.id}/messages`, { cookie: aliceCookie });
     assert.ok(aliceDmHistory.data.messages.some(message => message.content === 'Reply from Bob.'), 'both participants must read the same DM history');
 
+    const charlieAllowGroup=await request(port,'/privacy',{method:'PATCH',cookie:charlieCookie,body:{dm_privacy:'everyone'}});
+    assert.equal(charlieAllowGroup.response.status,200);
     const groupDm=await request<{conversation:{id:string}}>(port,'/dms',{method:'POST',cookie:aliceCookie,body:{userIds:[bobRegistration.data.user.id,charlieRegistration.data.user.id],name:'Garden Group'}});
     assert.equal(groupDm.response.status,201);
     const groupMessage=await request(port,`/dms/${groupDm.data.conversation.id}/messages`,{method:'POST',cookie:aliceCookie,body:{content:'Group messages remain available after a one-to-one block.'}});

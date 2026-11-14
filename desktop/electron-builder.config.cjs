@@ -1,8 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const owner = process.env.RELAY_GITHUB_OWNER || 'CHANGE_ME_GITHUB_OWNER';
-const repo = process.env.RELAY_GITHUB_REPO || 'relay-platform';
+const owner = process.env.RELAY_GITHUB_OWNER || 'ThunderZyro';
+const repo = process.env.RELAY_GITHUB_REPO || 'Relay';
 
 module.exports = {
   appId: 'com.relay.platform',

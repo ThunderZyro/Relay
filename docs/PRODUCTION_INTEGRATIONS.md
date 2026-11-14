@@ -8,6 +8,7 @@ Relay's web and desktop clients share one backend and one PostgreSQL database. C
 - `SESSION_SECRET` — private random value of at least 32 characters
 - `CLIENT_ORIGIN` — canonical browser origin
 - `ALLOWED_ORIGINS` — optional comma-separated additional browser origins
+- `RELAY_REALTIME_DATABASE_URL` — optional direct PostgreSQL connection for Socket.IO cross-instance messaging. When this is absent, Relay converts a Neon pooled hostname (the one containing `-pooler`) to its direct endpoint. For non-Neon providers, supply a direct connection that supports `LISTEN/NOTIFY`.
 
 Migrations run at server startup. Use a separate database for preview and test deployments. Never point a test workflow at production data.
 
@@ -53,9 +54,11 @@ The API returns ICE settings only to authenticated users. Without TURN, Relay us
 
 ## Hosted server lifecycle
 
-Vercel serverless WebSocket connections are not permanent. Relay rotates hosted sockets before the platform's request-duration limit, reconnects clients, rejoins rooms, and reloads the latest message history. Active chats also poll recent message history to cover events that may be broadcast from another serverless instance.
+Vercel serverless WebSocket connections are not permanent. Relay uses the PostgreSQL Socket.IO adapter so room broadcasts, socket management, and WebRTC signaling work across separate Vercel function instances. This adapter uses PostgreSQL `LISTEN/NOTIFY`, so it connects directly to Neon rather than through PgBouncer transaction pooling. The `socket_io_attachments` table is created by migration 006.
 
-That provides reconnect and message recovery, but a production deployment with heavy realtime traffic should add a distributed Socket.IO adapter plus shared presence/event fan-out. Process-local Socket.IO rooms alone are not a multi-instance message broker.
+Vercel clients use WebSocket-only transport (no long-polling handshake), and Relay rotates hosted sockets before the function duration limit. Clients reconnect, rejoin their rooms, and refresh recent history to cover brief disconnects. The active chat keeps a lower-frequency history sync as a recovery fallback.
+
+The adapter does not provide Socket.IO connection-state recovery; message history and room rejoin are Relay's recovery path.
 
 ## Deployment
 

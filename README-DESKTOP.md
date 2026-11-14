@@ -43,7 +43,7 @@ The build must run on Windows because it copies that machine's Windows Node runt
 
 ## Automatic desktop updates
 
-The app uses `electron-updater` with the GitHub Releases provider and the NSIS installer target. It checks shortly after startup, downloads a newer release in the background, and prompts the user to restart to apply it. NSIS differential packages are enabled to reduce update downloads when the changed files allow it.
+The app uses `electron-updater` with the GitHub Releases provider and the NSIS installer target. It checks shortly after startup, downloads a newer release in the background, and prompts the user to restart to apply it. You can also open **Help → Check for Updates…** at any time, or choose **Help → Open GitHub Releases** to view published versions. NSIS differential packages are enabled to reduce update downloads when the changed files allow it. The updater is configured for `ThunderZyro/Relay`.
 
 ### First release (recommended cloud build)
 
@@ -51,7 +51,7 @@ The app uses `electron-updater` with the GitHub Releases provider and the NSIS i
 2. In the GitHub repository, open **Settings → Actions → General → Workflow permissions** and allow read/write access to repository contents.
 3. Open **Actions → Build Relay Desktop → Run workflow** and run it on the default branch. The current root `package.json` version (`1.0.0`) is used for the release.
 4. Wait for the workflow to finish. The workflow runs the build on a GitHub-hosted Windows machine and publishes `Relay-Setup-<version>.exe`, `latest.yml`, and the blockmap asset to GitHub Releases.
-5. Download the installer from the release assets.
+5. Download the installer from the release assets and install it once. This first install puts the correct GitHub Releases feed into the app; older installs built with the previous placeholder publisher settings must be updated manually with this installer before automatic updates can work.
 
 The workflow uses GitHub's built-in `GITHUB_TOKEN`; no personal access token needs to be created, copied, or committed. The repository must be public because installed apps need to download release assets without embedding a private token.
 

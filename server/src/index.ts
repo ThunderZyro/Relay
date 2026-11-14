@@ -30,6 +30,10 @@ const allowedOrigins = new Set(
     })
 );
 const isProd = process.env.NODE_ENV === 'production';
+const deploymentOrigin = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
+function isAllowedOrigin(value?: string) {
+  return !!value && (allowedOrigins.has(value) || value === deploymentOrigin);
+}
 const cookieSecure = process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === 'true' : isProd;
 const cookieSameSite = process.env.COOKIE_SAME_SITE === 'lax' ? 'lax' : process.env.COOKIE_SAME_SITE === 'none' ? 'none' : (isProd ? 'none' : 'lax');
 const PORT = Number(process.env.PORT || 3001);
@@ -50,7 +54,7 @@ fs.mkdirSync(uploadDir, { recursive: true });
 app.set('trust proxy', isProd ? 1 : false);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' }, contentSecurityPolicy: false }));
 app.use(cors({
-  origin: (requestOrigin, callback) => callback(null, !!requestOrigin && allowedOrigins.has(requestOrigin)),
+  origin: (requestOrigin, callback) => callback(null, isAllowedOrigin(requestOrigin)),
   credentials: true
 }));
 app.use(express.json({ limit: '1mb' }));
@@ -62,17 +66,17 @@ const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 app.use('/api', (req, res, next) => {
   if (safeMethods.has(req.method)) return next();
   const requestOrigin = req.get('origin');
-  if (!requestOrigin || !allowedOrigins.has(requestOrigin) || req.get('x-relay-request') !== '1') {
+  if (!isAllowedOrigin(requestOrigin) || req.get('x-relay-request') !== '1') {
     return fail(res, 403, 'This request did not pass Relay origin verification.');
   }
   return next();
 });
 
 const io = new SocketServer(server, {
-  cors: { origin: [...allowedOrigins], credentials: true },
+  cors: { origin: (requestOrigin, callback) => callback(null, isAllowedOrigin(requestOrigin)), credentials: true },
   allowRequest: (request, callback) => {
     const requestOrigin = request.headers.origin;
-    callback(null, typeof requestOrigin === 'string' && allowedOrigins.has(requestOrigin));
+    callback(null, typeof requestOrigin === 'string' && isAllowedOrigin(requestOrigin));
   },
   maxHttpBufferSize: 1e6
 });

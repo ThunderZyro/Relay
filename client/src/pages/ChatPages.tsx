@@ -380,9 +380,10 @@ function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:bo
 }
 
 export function ChannelPage(){
- const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [sharedOpen,setSharedOpen]=useState(false);const [sharedItems,setSharedItems]=useState<any[]>([]);const [sharedLoading,setSharedLoading]=useState(false);
+ const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [roomError,setRoomError]=useState('');const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [sharedOpen,setSharedOpen]=useState(false);const [sharedItems,setSharedItems]=useState<any[]>([]);const [sharedLoading,setSharedLoading]=useState(false);
  useEffect(()=>{
   let active=true;
+  setRoomError('');
   if(!serverId){setRoom(null);return()=>{active=false;};}
   setRoom(null);
   api<RoomServer>(`/servers/${serverId}`)
@@ -395,7 +396,7 @@ export function ChannelPage(){
      if(!channelId)navigate(`/channels/${serverId}/${target}`,{replace:true});
     }
    })
-   .catch(e=>{if(active)toast.show(e.message,'error');});
+   .catch(e=>{if(active){setRoomError(e.message||'This community could not be opened.');toast.show(e.message,'error');}});
   return()=>{active=false;};
  },[serverId,navigate]);
  useEffect(()=>{setSelected(channelId);setReply(null);},[channelId]);
@@ -404,7 +405,7 @@ export function ChannelPage(){
  const typing=chat.typing;
  useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
- if(!serverId)return <Loading/>;if(!room)return <Loading label="Loading server"/>;
+ if(!serverId)return <Loading/>;if(!room)return roomError?<div className="page-content"><EmptyState title="Community unavailable" description={roomError} action={<Link to="/discover">Explore communities</Link>}/></div>:<Loading label="Loading server"/>;
  if(!channel)return <div className="page-content"><EmptyState title="No channel selected" description="Create a channel in server settings or choose another server." action={<Link to={`/server/${serverId}/settings/overview`}>Server settings</Link>}/></div>;
  if(channel.type==='voice')return <div className="page-content voice-page"><div className="voice-card"><Volume2 size={32}/><h1>{channel.name}</h1><p>Talk with your community, turn on your camera, or share your screen. Some networks require TURN relay support.</p><VoiceJoin key={channel.id} channelId={channel.id}/><div className="voice-controls"><Button variant="secondary" onClick={()=>setMembersOpen(v=>!v)}><Users size={15}/> {room.members.length} members</Button><Button variant="secondary" onClick={()=>navigate(`/server/${serverId}/settings/overview`)}>Channel settings</Button></div>{membersOpen&&<div className="voice-member-list">{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name||'Member'}</small></div>)}</div>}</div></div>;
  return <div className="chat-page">

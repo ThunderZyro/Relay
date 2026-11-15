@@ -11,3 +11,8 @@ export function verifyStripeWebhookSignature(payload:Buffer,header:string,secret
   const candidate=Buffer.from(value,'hex');return candidate.length===expected.length&&crypto.timingSafeEqual(candidate,expected);
  });
 }
+
+export function stripeSubscriptionHasBoostPrice(subscription:any,boostPriceId:string):boolean{
+ if(!boostPriceId||!Array.isArray(subscription?.items?.data))return false;
+ return subscription.items.data.some((item:any)=>item?.price?.id===boostPriceId);
+}

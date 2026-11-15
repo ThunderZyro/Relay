@@ -562,9 +562,7 @@ app.get('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   const row=db.prepare('SELECT data FROM settings WHERE user_id=?').get(req.user!.id) as any;
   const boost=getBoostSnapshot(req.user!.id);
   const stored=JSON.parse(row?.data||'{}');
-  const settings={...DEFAULT_USER_SETTINGS,...stored,
-    keybinds:{...DEFAULT_USER_SETTINGS.keybinds,...(stored.keybinds||{})},
-    customTheme:{...DEFAULT_USER_SETTINGS.customTheme,...(stored.customTheme||{})}};
+  const settings=mergeUserSettings(DEFAULT_USER_SETTINGS,stored);
   if(!boost.active){if(settings.theme==='custom')settings.theme='graphite';settings.sidebarWidth=DEFAULT_USER_SETTINGS.sidebarWidth;settings.messageRadius=DEFAULT_USER_SETTINGS.messageRadius;settings.fontFamily=DEFAULT_USER_SETTINGS.fontFamily;}
   res.json({settings,boost});
 });

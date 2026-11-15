@@ -565,7 +565,7 @@ app.get('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   const settings={...DEFAULT_USER_SETTINGS,...stored,
     keybinds:{...DEFAULT_USER_SETTINGS.keybinds,...(stored.keybinds||{})},
     customTheme:{...DEFAULT_USER_SETTINGS.customTheme,...(stored.customTheme||{})}};
-  if(settings.theme==='custom'&&!boost.active)settings.theme='graphite';
+  if(!boost.active){if(settings.theme==='custom')settings.theme='graphite';settings.sidebarWidth=DEFAULT_USER_SETTINGS.sidebarWidth;settings.messageRadius=DEFAULT_USER_SETTINGS.messageRadius;settings.fontFamily=DEFAULT_USER_SETTINGS.fontFamily;}
   res.json({settings,boost});
 });
 app.put('/api/settings', requireAuth, (req: AuthedRequest,res) => {

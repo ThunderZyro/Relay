@@ -57,3 +57,9 @@ export function normalizeSettingsForEntitlement(settings:Record<string,any>,boos
   fontFamily:DEFAULT_USER_SETTINGS.fontFamily
  };
 }
+
+export function isBoostSubscriptionActive(status:string,periodEnd:string|null|undefined,nowMs=Date.now()){
+ if(!['active','trialing'].includes(status)||!periodEnd)return false;
+ const expiresAt=new Date(periodEnd).getTime();
+ return Number.isFinite(expiresAt)&&expiresAt>nowMs;
+}

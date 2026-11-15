@@ -18,6 +18,7 @@ import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
 import { createMessageHistoryCursor } from './message-history.js';
+import { shouldNotifyChannelMention } from './mention-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 
 const app = express();
@@ -63,10 +64,24 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
+// API responses contain account, message, and conversation data. Never let a
+// browser or shared intermediary reuse an authenticated response.
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
 // Cookie-authenticated mutations require a trusted browser origin and a
 // client-only header that ordinary cross-origin forms cannot send.
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
-app.use('/api', (req, res, next) => {
+const apiMutationLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: req => safeMethods.has(req.method)
+});
+app.use('/api', apiMutationLimiter, (req, res, next) => {
   if (safeMethods.has(req.method)) return next();
   const requestOrigin = req.get('origin');
   if (!isAllowedOrigin(requestOrigin) || req.get('x-relay-request') !== '1') {
@@ -407,10 +422,16 @@ app.put('/api/account/password', requireAuth, asyncRoute(async (req,res) => {
   const row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.user!.id) as any;
   if(!row || !(await bcrypt.compare(p.data.currentPassword,row.password_hash)))return fail(res,403,'Current password is incorrect.');
   const hash=await bcrypt.hash(p.data.newPassword,12);
-  db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash,req.user!.id);
   const currentToken=req.cookies?.relay_session;
-  const revoked=db.prepare('SELECT id FROM sessions WHERE user_id=? AND token_hash<>?').all(req.user!.id,currentToken?sha(currentToken):'') as any[];
-  db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').run(req.user!.id,currentToken?sha(currentToken):'');
+  const currentTokenHash=currentToken?sha(currentToken):'';
+  const revoked=db.transaction(()=>{
+    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash,req.user!.id);
+    // A previously issued reset link must not undo a later password change.
+    db.prepare('DELETE FROM password_reset_tokens WHERE user_id=?').run(req.user!.id);
+    const sessions=db.prepare('SELECT id FROM sessions WHERE user_id=? AND token_hash<>?').all(req.user!.id,currentTokenHash) as any[];
+    db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').run(req.user!.id,currentTokenHash);
+    return sessions;
+  })();
   revoked.forEach(session=>disconnectSessionSockets(session.id));
   res.json({ok:true});
 }));
@@ -844,7 +865,7 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
   const row=messageRows(`m.id=?`,[mid],1)[0];
   const room=destination.channelId?`channel:${destination.channelId}`:`dm:${destination.dmId}`; io.to(room).emit('message:new',row);
   if(destination.dmId){const users=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(destination.dmId,req.user!.id) as any[]; users.forEach(u=>notify(u.user_id,'dm',`Message from ${req.user!.username}`,p.data.content.slice(0,100),`/channels/@me/${destination.dmId}`));}
-  else {const ch=db.prepare('SELECT server_id,name FROM channels WHERE id=?').get(destination.channelId) as any; const mentionIds=[...p.data.content.matchAll(/@\{([a-zA-Z0-9_-]+)\}/g)].map(m=>m[1]); mentionIds.forEach(uid=>{if(uid!==req.user!.id && membership(ch.server_id,uid))notify(uid,'mention',`Mention in #${ch.name}`,p.data.content.slice(0,100),`/channels/${ch.server_id}/${destination.channelId}`);});}
+  else {const ch=db.prepare('SELECT server_id,name FROM channels WHERE id=?').get(destination.channelId) as any; const mentionIds=[...p.data.content.matchAll(/@\{([a-zA-Z0-9_-]+)\}/g)].map(m=>m[1]); mentionIds.forEach(uid=>{if(shouldNotifyChannelMention(req.user!.id,uid,canReadChannel(destination.channelId!,uid)))notify(uid,'mention',`Mention in #${ch.name}`,p.data.content.slice(0,100),`/channels/${ch.server_id}/${destination.channelId}`);});}
   res.status(201).json({message:row});
 }
 app.post('/api/channels/:channelId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{channelId:req.params.channelId}));
@@ -1041,8 +1062,7 @@ const updatePresenceHeartbeat = (req:AuthedRequest,res:Response) => {
   db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(),req.user!.id);
   res.json({ok:true});
 };
-// Keep GET briefly for older Relay clients while current clients use POST.
-app.get('/api/presence/heartbeat', requireAuth, updatePresenceHeartbeat);
+// Heartbeats update account activity, so accept them only as a CSRF-protected POST.
 app.post('/api/presence/heartbeat', requireAuth, updatePresenceHeartbeat);
 function socketUser(cookieHeader='') {
   const match=cookieHeader.match(/(?:^|;\s*)relay_session=([^;]+)/); if(!match)return null;
@@ -1057,6 +1077,17 @@ io.use((socket,next)=>{
 });
 io.on('connection',(socket)=>{
   const user=(socket.data as any).user;
+  const socketEventWindows=new Map<string,{startedAt:number;count:number}>();
+  const allowSocketEvent=(name:string,limit:number,windowMs:number)=>{
+    const timestamp=Date.now();
+    let window=socketEventWindows.get(name);
+    if(!window||timestamp-window.startedAt>=windowMs){
+      window={startedAt:timestamp,count:0};
+      socketEventWindows.set(name,window);
+    }
+    window.count+=1;
+    return window.count<=limit;
+  };
   socket.join(`user:${user.id}`);
   socket.join(`session:${user.session_id}`);
   const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
@@ -1072,25 +1103,47 @@ io.on('connection',(socket)=>{
     if(!active){socket.disconnect(true);return;}
     next();
   });
-  socket.on('room:join-channel',(channelId:string,ack?:Function)=>{if(typeof channelId!=='string'||!canReadChannel(channelId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`channel:${channelId}`);ack?.({ok:true});});
-  socket.on('room:join-dm',(dmId:string,ack?:Function)=>{if(typeof dmId!=='string'||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}socket.join(`dm:${dmId}`);ack?.({ok:true});});
+  socket.on('room:join-channel',(channelId:string,ack?:Function)=>{
+    if(!allowSocketEvent('room:join-channel',30,60_000)){ack?.({ok:false,error:'Too many room changes. Please reconnect.'});return;}
+    if(typeof channelId!=='string'||channelId.length>128||!canReadChannel(channelId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}
+    socket.join(`channel:${channelId}`);
+    ack?.({ok:true});
+  });
+  socket.on('room:join-dm',(dmId:string,ack?:Function)=>{
+    if(!allowSocketEvent('room:join-dm',30,60_000)){ack?.({ok:false,error:'Too many room changes. Please reconnect.'});return;}
+    if(typeof dmId!=='string'||dmId.length>128||!canAccessDm(dmId,user.id)){ack?.({ok:false,error:'Not authorized'});return;}
+    socket.join(`dm:${dmId}`);
+    ack?.({ok:true});
+  });
   const typingRoom=(data:any)=>{
-    const channelId=typeof data?.channelId==='string'?data.channelId:null;
-    const dmId=typeof data?.dmId==='string'?data.dmId:null;
+    const channelId=typeof data?.channelId==='string'&&data.channelId.length<=128?data.channelId:null;
+    const dmId=typeof data?.dmId==='string'&&data.dmId.length<=128?data.dmId:null;
     if(channelId){
       const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(channelId) as any;
-      if(channel&&canReadChannel(channelId,user.id)&&!isTimedOut(channel.server_id,user.id))return `channel:${channelId}`;
+      const room=`channel:${channelId}`;
+      if(channel&&canReadChannel(channelId,user.id)&&!isTimedOut(channel.server_id,user.id)&&socket.rooms.has(room))return room;
       return null;
     }
-    return dmId&&canAccessDm(dmId,user.id)?`dm:${dmId}`:null;
+    const room=dmId?`dm:${dmId}`:null;
+    return room&&canAccessDm(dmId!,user.id)&&socket.rooms.has(room)?room:null;
   };
-  socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{const room=typingRoom(data);if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});});
-  socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{const room=typingRoom(data);if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});});
+  socket.on('typing:start',(data:{channelId?:string;dmId?:string})=>{
+    if(!allowSocketEvent('typing',30,10_000))return;
+    const room=typingRoom(data);
+    if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:true});
+  });
+  socket.on('typing:stop',(data:{channelId?:string;dmId?:string})=>{
+    if(!allowSocketEvent('typing',30,10_000))return;
+    const room=typingRoom(data);
+    if(room)socket.to(room).emit('typing',{userId:user.id,username:user.username,active:false});
+  });
   socket.on('voice:join',async(data:{channelId:string},ack?:Function)=>{
-    if(typeof data?.channelId!=='string'||!canJoinVoiceChannel(data.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}
+    if(!allowSocketEvent('voice:join',8,60_000)){ack?.({ok:false,error:'Too many voice join attempts. Please reconnect.'});return;}
+    if(typeof data?.channelId!=='string'||data.channelId.length>128||!canJoinVoiceChannel(data.channelId,user.id)){ack?.({ok:false,error:'You cannot join this voice channel. Check membership, channel access, and any active server timeout.'});return;}
     const room=`voice:${data.channelId}`;
+    const alreadyJoined=socket.rooms.has(room);
     socket.join(room);
-    socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});
+    if(!alreadyJoined)socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'joined'});
     try {
       const peers=await io.in(room).fetchSockets();
       ack?.({ok:true,participants:peers.filter(peer=>peer.id!==socket.id).map(peer=>({
@@ -1106,22 +1159,24 @@ io.on('connection',(socket)=>{
     }
   });
   socket.on('voice:leave',(channelId:string)=>{
-    if(typeof channelId!=='string')return;
+    if(typeof channelId!=='string'||channelId.length>128)return;
     const room=`voice:${channelId}`;
     if(!socket.rooms.has(room))return;
     socket.leave(room);
     socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});
   });
   socket.on('voice:state',(data:{channelId:string;muted:boolean;deafened:boolean})=>{
-    if(typeof data?.channelId!=='string'||typeof data.muted!=='boolean'||typeof data.deafened!=='boolean')return;
+    if(!allowSocketEvent('voice:state',30,10_000))return;
+    if(typeof data?.channelId!=='string'||data.channelId.length>128||typeof data.muted!=='boolean'||typeof data.deafened!=='boolean')return;
     if(canJoinVoiceChannel(data.channelId,user.id)&&socket.rooms.has(`voice:${data.channelId}`))socket.to(`voice:${data.channelId}`).emit('voice:state',{userId:user.id,channelId:data.channelId,muted:data.muted,deafened:data.deafened});
   });
   socket.on('webrtc:signal',async(data:{toSocketId:string;payload:unknown;channelId:string})=>{
-    if(typeof data?.channelId!=='string'||typeof data.toSocketId!=='string'||data.toSocketId.length>128)return;
+    if(!allowSocketEvent('webrtc:signal',120,60_000))return;
+    if(typeof data?.channelId!=='string'||data.channelId.length>128||typeof data.toSocketId!=='string'||data.toSocketId.length>128)return;
     const signal=data.payload as any;
     const validSignal=!!signal&&typeof signal==='object'&&(
-      (signal.type==='candidate'&&typeof signal.candidate?.candidate==='string')||
-      ((signal.type==='offer'||signal.type==='answer')&&typeof signal.sdp?.sdp==='string')
+      (signal.type==='candidate'&&typeof signal.candidate?.candidate==='string'&&signal.candidate.candidate.length<=8192)||
+      ((signal.type==='offer'||signal.type==='answer')&&typeof signal.sdp?.sdp==='string'&&signal.sdp.sdp.length<=32768)
     );
     if(!validSignal)return;
     const room=`voice:${data.channelId}`;

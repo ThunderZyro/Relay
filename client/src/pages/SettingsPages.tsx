@@ -94,8 +94,40 @@ export function SettingsPage(){
 
 export function ServerSettingsPage(){
  const {serverId,section='overview'}=useParams();const navigate=useNavigate();const toast=useToast();const [server,setServer]=useState<any>(null);const [roles,setRoles]=useState<any[]>([]);const [invites,setInvites]=useState<any[]>([]);const [bans,setBans]=useState<any[]>([]);const [reports,setReports]=useState<any[]>([]);const [query,setQuery]=useState('');const [newRole,setNewRole]=useState('');const [selectedRole,setSelectedRole]=useState<any>(null);const [channel,setChannel]=useState({name:'',type:'text',topic:'',category_id:''});const [newCategory,setNewCategory]=useState('');const [editingChannel,setEditingChannel]=useState<any>(null);const [inviteLimit,setInviteLimit]=useState({expiresHours:168,maxUses:0});const [loading,setLoading]=useState(true);const [deleteOpen,setDeleteOpen]=useState(false);
- const load=async()=>{if(!serverId)return;try{const s=await api<any>(`/servers/${serverId}`);setServer(s);if(section==='roles'||section==='members')setRoles((await api<any>(`/servers/${serverId}/roles`)).roles);if(section==='invites')setInvites((await api<any>(`/servers/${serverId}/invites`)).invites);if(section==='moderation'){const [b,r]=await Promise.all([api<any>(`/servers/${serverId}/bans`),api<any>(`/servers/${serverId}/reports`)]);setBans(b.bans);setReports(r.reports);}}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};
- useEffect(()=>{setLoading(true);void load();},[serverId,section]);
+ const requestRef=useRef(0);
+ const load=async()=>{
+  if(!serverId)return;
+  const request=++requestRef.current;
+  setLoading(true);
+  try{
+   const s=await api<any>(`/servers/${serverId}`);
+   if(request!==requestRef.current)return;
+   setServer(s);
+   if(section==='roles'||section==='members'){
+    const result=await api<any>(`/servers/${serverId}/roles`);
+    if(request!==requestRef.current)return;
+    setRoles(result.roles);
+   }
+   if(section==='invites'){
+    const result=await api<any>(`/servers/${serverId}/invites`);
+    if(request!==requestRef.current)return;
+    setInvites(result.invites);
+   }
+   if(section==='moderation'){
+    const [b,r]=await Promise.all([api<any>(`/servers/${serverId}/bans`),api<any>(`/servers/${serverId}/reports`)]);
+    if(request!==requestRef.current)return;
+    setBans(b.bans);setReports(r.reports);
+   }
+  }catch(e:any){
+   if(request===requestRef.current)toast.show(e.message,'error');
+  }finally{
+   if(request===requestRef.current)setLoading(false);
+  }
+ };
+ useEffect(()=>{
+  void load();
+  return()=>{requestRef.current+=1;};
+ },[serverId,section]);
  const updateServer=async(e:React.FormEvent)=>{e.preventDefault();try{await patch(`/servers/${serverId}`,{name:server.server.name,description:server.server.description});toast.show('Server updated.','success');}catch(e:any){toast.show(e.message,'error');}};
  const createChannel=async(e:React.FormEvent)=>{e.preventDefault();try{await post(`/servers/${serverId}/channels`,{...channel,category_id:channel.category_id||null});setChannel({name:'',type:'text',topic:'',category_id:''});toast.show('Channel created.','success');await load();}catch(e:any){toast.show(e.message,'error');}};
  const createCategory=async(e:React.FormEvent)=>{e.preventDefault();try{await post(`/servers/${serverId}/categories`,{name:newCategory.trim()});setNewCategory('');toast.show('Category created.','success');await load();}catch(e:any){toast.show(e.message,'error');}};

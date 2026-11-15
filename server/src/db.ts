@@ -114,7 +114,8 @@ const migrations = [
   { version: 7, name: 'distributed API rate limits', file: '007_api_rate_limits.sql' },
   { version: 8, name: 'message read receipts', file: '008_message_reads.sql' },
   { version: 9, name: 'Relay Boost subscriptions', file: '009_user_boosts.sql' },
-  { version: 10, name: 'message bookmarks', file: '010_message_bookmarks.sql' }
+  { version: 10, name: 'message bookmarks', file: '010_message_bookmarks.sql' },
+  { version: 11, name: 'message forwarding metadata', file: '011_message_forwarding.sql' }
 ];
 const applyMigrations = db.transaction(() => {
   db.prepare('SELECT pg_advisory_xact_lock(71324001)').get();

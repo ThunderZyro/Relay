@@ -19,6 +19,9 @@ test('rejects unsupported fields and invalid appearance values',()=>{
 test('allows only supported shortcut syntax and device identifiers',()=>{
  assert.equal(userSettingsPatchSchema.safeParse({keybinds:{focusSearch:'Ctrl+K'}}).success,true);
  assert.equal(userSettingsPatchSchema.safeParse({keybinds:{focusSearch:'Ctrl+K!'}}).success,false);
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{focusSearch:'Ctrl+Shift'}}).success,false);
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{focusSearch:'Ctrl++K'}}).success,false);
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{focusSearch:'Ctrl+Control+K'}}).success,false);
  assert.equal(userSettingsPatchSchema.safeParse({voiceInputDeviceId:'device-1',voiceOutputDeviceId:'device-2'}).success,true);
 });
 

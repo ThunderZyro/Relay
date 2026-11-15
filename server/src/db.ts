@@ -116,7 +116,8 @@ const migrations = [
   { version: 9, name: 'Relay Boost subscriptions', file: '009_user_boosts.sql' },
   { version: 10, name: 'message bookmarks', file: '010_message_bookmarks.sql' },
   { version: 11, name: 'message forwarding metadata', file: '011_message_forwarding.sql' },
-  { version: 12, name: 'chat polls and votes', file: '012_chat_polls.sql' }
+  { version: 12, name: 'chat polls and votes', file: '012_chat_polls.sql' },
+  { version: 13, name: 'per-user direct message preferences', file: '013_dm_user_preferences.sql' }
 ];
 const applyMigrations = db.transaction(() => {
   db.prepare('SELECT pg_advisory_xact_lock(71324001)').get();

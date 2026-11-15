@@ -546,6 +546,6 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
 .activity-card-meta span:first-child{padding:5px 8px;border-radius:99px;background:#eaf1e8;color:#416d59}
 .activity-card h2{margin:13px 0 5px;color:#344b3e;font-size:18px;letter-spacing:-.4px}
 .activity-card>p{min-height:38px;margin:0 0 12px;color:#748278;font-size:12px;line-height:1.6}
-.activity-card pre{width:100%;min-height:120px;flex:1;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:13px;background:#f7f4ec;border:1px solid #eee7db;border-radius:12px;color:#526258;font:11px/1.65 inherit}
+.activity-card pre{width:100%;min-height:120px;flex:1;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:13px;background:#f7f4ec;border:1px solid #eee7db;border-radius:12px;color:#526258;font-family:inherit;font-size:11px;line-height:1.65}
 .activity-card .btn{margin-top:13px}
 @media(max-width:760px){.activity-library-tools{grid-template-columns:1fr}.activity-library-categories{overflow-x:auto;flex-wrap:nowrap;padding-bottom:3px}.activity-library-categories button{flex:none}.activity-library-grid{grid-template-columns:1fr}.activity-card>p{min-height:0}}

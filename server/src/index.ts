@@ -1421,7 +1421,7 @@ app.delete('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) =>
 
 // staged_uploads is intentionally private and only finalized when an authenticated message sends it.
  // staged_uploads is created by the versioned PostgreSQL migration in db.ts.
-const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','video/mp4']);
+const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','audio/webm','video/mp4']);
 async function cleanupExpiredStagedUploads() {
   const expired=db.prepare("SELECT id,storage_name FROM staged_uploads WHERE created_at::timestamptz<=NOW()+?::interval").all(`-${stagedUploadTtlHours} hours`) as any[];
   for(const row of expired){

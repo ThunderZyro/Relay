@@ -22,7 +22,7 @@ import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 import { verifyStripeWebhookSignature } from './boost.js';
-import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,requiresBoostSettings} from './user-settings.js';
+import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,normalizeSettingsForEntitlement,requiresBoostSettings} from './user-settings.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -563,8 +563,8 @@ app.get('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   const boost=getBoostSnapshot(req.user!.id);
   const stored=JSON.parse(row?.data||'{}');
   const settings=mergeUserSettings(DEFAULT_USER_SETTINGS,stored);
-  if(!boost.active){if(settings.theme==='custom')settings.theme='graphite';settings.sidebarWidth=DEFAULT_USER_SETTINGS.sidebarWidth;settings.messageRadius=DEFAULT_USER_SETTINGS.messageRadius;settings.fontFamily=DEFAULT_USER_SETTINGS.fontFamily;}
-  res.json({settings,boost});
+  const effectiveSettings=normalizeSettingsForEntitlement(settings,boost.active);
+  res.json({settings:effectiveSettings,boost});
 });
 app.put('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   const incoming=userSettingsPatchSchema.safeParse(req.body?.settings);

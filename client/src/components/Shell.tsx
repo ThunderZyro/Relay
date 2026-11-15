@@ -121,7 +121,7 @@ export default function Shell(){
            <Link to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`} onClick={()=>setMobileNav(false)}>
              <span className="dm-avatar-wrap"><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="md" presence={!group?other?.presence:undefined}/>{group&&<i>{others.length+1}</i>}</span>
              <span className="dm-item-copy"><b>{label}</b><small>{typeof dm.last_message==='string'&&dm.last_message.trim()?dm.last_message:group?'Group conversation':'Open conversation'}</small></span>
-             <span className="dm-item-meta">{dm.is_pinned&&<Pin size={12}/ >}{dm.is_favorite&&<Star size={12}/ >}{dm.is_muted&&<BellOff size={12}/ >}{group&&<UsersRound size={12}/ >}{Number(dm.unread_count||0)>0&&<i className="dm-unread-count">{Number(dm.unread_count)>99?'99+':dm.unread_count}</i>}</span>
+             <span className="dm-item-meta">{dm.is_pinned&&<Pin size={12}/>}{dm.is_favorite&&<Star size={12}/>}{dm.is_muted&&<BellOff size={12}/>}{group&&<UsersRound size={12}/>}{Number(dm.unread_count||0)>0&&<i className="dm-unread-count">{Number(dm.unread_count)>99?'99+':dm.unread_count}</i>}</span>
            </Link>
            <details className="dm-row-menu">
              <summary aria-label={`Manage ${label}`} title="Chat options"><MoreHorizontal size={15}/></summary>

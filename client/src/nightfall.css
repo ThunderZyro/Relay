@@ -560,3 +560,16 @@ body,button,input,select,textarea {
 :root[data-theme] .clubhouse-shell :is(.message-content,.message-body,.composer,.settings-card,.profile-card,.club-card) {
   border-radius:var(--custom-message-radius,12px);
 }
+
+
+/* The server-rail create button follows the selected palette like other controls. */
+:root[data-theme] .clubhouse-shell .server-add {
+  background:var(--accent-soft)!important;
+  border-color:var(--line)!important;
+  color:var(--accent)!important;
+}
+:root[data-theme] .clubhouse-shell .server-add:hover {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}

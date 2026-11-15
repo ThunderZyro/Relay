@@ -8,32 +8,14 @@
     "server"
   ],
   "scripts": {
-    "dev": "concurrently -k -n API,WEB -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "npm run dev --workspace=server",
-    "dev:client": "npm run dev --workspace=client",
     "build": "npm run build:client && npm run build:server",
-    "build:client": "npm run build --workspace=client",
-    "build:server": "npm run build --workspace=server",
-    "start": "npm run start --workspace=server",
-    "test": "npm test --workspace=server",
-    "db:seed": "npm run seed --workspace=server",
-    "desktop:build:win": "npm run build && electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never",
-    "desktop:publish": "npm run build && electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish always"
-  },
-  "devDependencies": {
-    "concurrently": "^9.1.2",
-    "electron": "^45.3.2",
-    "electron-builder": "^26.18.1"
+    "build:client": "npm run build --workspace=@relay/client",
+    "build:server": "npm run build --workspace=@relay/server",
+    "start": "node server/dist/index.js",
+    "db:seed": "npm run seed --workspace=@relay/server"
   },
   "engines": {
     "node": ">=22.0.0",
     "npm": ">=10.0.0"
-  },
-  "main": "desktop/main.cjs",
-  "dependencies": {
-    "electron-updater": "^6.8.12"
-  },
-  "allowScripts": {
-    "esbuild": true
   }
 }

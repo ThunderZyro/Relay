@@ -532,3 +532,20 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
 .voice-join{flex-wrap:wrap}
 .voice-join>button{margin:3px}
 @media(max-width:640px){.voice-video-grid{grid-template-columns:1fr}.voice-video-tile video{max-height:230px}}
+
+
+/* A practical, copy-ready activity library. */
+.activity-library-tools{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:12px;align-items:center;margin:4px 0 20px}
+.activity-library-categories{display:flex;flex-wrap:wrap;gap:6px}
+.activity-library-categories button{min-height:33px;padding:0 11px;border:1px solid #e8e0d3;border-radius:99px;background:#fffdf8;color:#718077;font-size:11px;font-weight:700;cursor:pointer}
+.activity-library-categories button.active{background:#e4eee5;border-color:#d0e1d2;color:#315f50}
+.activity-result-count{grid-column:1/-1;color:#849187;font-size:11px}
+.activity-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.activity-card{display:flex;min-width:0;flex-direction:column;align-items:flex-start;padding:20px;background:#fffdf8;border:1px solid #e8e0d3;border-radius:18px;box-shadow:0 8px 22px rgba(54,62,48,.035)}
+.activity-card-meta{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;width:100%;color:#718677;font-size:9px;font-weight:850;letter-spacing:.7px}
+.activity-card-meta span:first-child{padding:5px 8px;border-radius:99px;background:#eaf1e8;color:#416d59}
+.activity-card h2{margin:13px 0 5px;color:#344b3e;font-size:18px;letter-spacing:-.4px}
+.activity-card>p{min-height:38px;margin:0 0 12px;color:#748278;font-size:12px;line-height:1.6}
+.activity-card pre{width:100%;min-height:120px;flex:1;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:13px;background:#f7f4ec;border:1px solid #eee7db;border-radius:12px;color:#526258;font:11px/1.65 inherit}
+.activity-card .btn{margin-top:13px}
+@media(max-width:760px){.activity-library-tools{grid-template-columns:1fr}.activity-library-categories{overflow-x:auto;flex-wrap:nowrap;padding-bottom:3px}.activity-library-categories button{flex:none}.activity-library-grid{grid-template-columns:1fr}.activity-card>p{min-height:0}}

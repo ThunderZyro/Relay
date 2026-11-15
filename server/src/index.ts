@@ -16,7 +16,7 @@ import { Server as SocketServer } from 'socket.io';
 import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
-import { createMessageHistoryCursor } from './message-history.js';
+import { createMessageHistoryCursor, unreadMessagesForUser } from './message-history.js';
 import { scheduleUntil } from './session-expiry.js';
 import { isPollClosed, validatePollOptions, validatePollSelection } from './poll-policy.js';
 import { dmPreferencePatchSchema, mergeDmPreferences } from './dm-preferences.js';
@@ -328,6 +328,8 @@ async function deleteStoredObjects(storageNames: string[]) {
 function notify(userId: string, type: string, title: string, body: string, href: string) {
   const pref=db.prepare('SELECT data FROM settings WHERE user_id=?').get(userId) as any; let prefs:any={}; try{prefs=JSON.parse(pref?.data||'{}');}catch{}
   if((type==='dm' && prefs.dmNotifications===false) || (type==='mention' && prefs.mentionNotifications===false)) return;
+  const dmMatch=type==='dm'?href.match(/^\\/channels\\/@me\\/([^/?#]+)/):null;
+  if(dmMatch && db.prepare('SELECT 1 FROM dm_user_preferences WHERE dm_id=? AND user_id=? AND is_muted=1').get(dmMatch[1],userId))return;
   const notificationId = id();
   db.prepare('INSERT INTO notifications(id,user_id,type,title,body,href) VALUES(?,?,?,?,?,?)')
     .run(notificationId, userId, type, title, body, href);
@@ -1071,7 +1073,7 @@ function messageRows(whereSql:string, params:any[], limit=60, userId:string|null
     }));
 }
 function markMessagesRead(messages:any[], userId:string, room:string, username:string) {
-  const unread=messages.filter(message=>message.sender_id!==userId && !(message.read_by||[]).some((reader:any)=>reader.user_id===userId));
+  const unread=unreadMessagesForUser(messages,userId);
   if(!unread.length)return;
   const readAt=now();
   const ids=unread.map(message=>message.id);
@@ -1080,17 +1082,6 @@ function markMessagesRead(messages:any[], userId:string, room:string, username:s
     SELECT m.id,?,? FROM messages m WHERE m.id IN (${placeholders})
     ON CONFLICT(message_id,user_id) DO NOTHING RETURNING message_id`).all(userId,readAt,...ids) as Array<{message_id:string}>;
   if(inserted.length)io.to(room).emit('message:read',{userId,username,messageIds:inserted.map(row=>row.message_id),readAt});
-}
-function markDmConversationRead(dmId:string,userId:string,room:string,username:string) {
-  const latestUnread=db.prepare(`SELECT m.id FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
-    AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id=?)
-    ORDER BY m.created_at DESC,m.id DESC LIMIT 60`).all(dmId,userId,userId) as Array<{id:string}>;
-  if(!latestUnread.length)return;
-  const readAt=now();
-  db.prepare(`INSERT INTO message_reads(message_id,user_id,read_at)
-    SELECT m.id,?,? FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
-    ON CONFLICT(message_id,user_id) DO NOTHING`).run(userId,readAt,dmId,userId);
-  io.to(room).emit('message:read',{userId,username,messageIds:latestUnread.map(message=>message.id),readAt});
 }
 function sharedAttachments(whereSql:string,params:any[]) {
   return db.prepare(`SELECT a.id,a.filename,a.mime,a.size,m.created_at,u.username
@@ -1247,7 +1238,8 @@ app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
-  markDmConversationRead(req.params.dmId,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
+  const messages=messageRows(where,params,60,req.user!.id);
+  markMessagesRead(messages,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
   res.json({messages:messageRows(where,params,60,req.user!.id)});
 });
 app.get('/api/dms/:dmId/messages/search', requireAuth, (req: AuthedRequest,res) => {

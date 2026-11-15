@@ -1080,6 +1080,7 @@ app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, as
 
   const sourceFiles=db.prepare('SELECT filename,mime,size,storage_name FROM attachments WHERE message_id=? ORDER BY id').all(source.id) as any[];
   const copiedFiles:Array<{id:string;filename:string;mime:string;size:number;storage_name:string}>=[];
+  let committed=false;
   try{
     for(const file of sourceFiles){
       const bytes=await readUpload(file.storage_name);
@@ -1113,6 +1114,7 @@ app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, as
       res.setHeader('Retry-After',String(created.retryAfter));
       return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);
     }
+    committed=true;
     const message=messageRows('m.id=?',[messageId],1)[0];
     const room=destinationChannel?`channel:${destinationChannel.id}`:`dm:${p.data.dmId}`;
     io.to(room).emit('message:new',message);
@@ -1122,7 +1124,7 @@ app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, as
     }
     return res.status(201).json({message});
   }catch(error){
-    try{await deleteStoredObjects(copiedFiles.map(file=>file.storage_name));}catch{/* Preserve the original forwarding error. */}
+    if(!committed){try{await deleteStoredObjects(copiedFiles.map(file=>file.storage_name));}catch{/* Preserve the original forwarding error. */}}
     throw error;
   }
 }));

@@ -10,7 +10,20 @@ export function SettingsPage(){
  const {section='account'}=useParams();const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const [settings,setSettings]=useState<any>({theme:'graphite',density:'comfortable',accent:'#8795a2',fontScale:100,reducedMotion:false,contrast:'normal',messageLayout:'cozy',keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'}});const [profile,setProfile]=useState<any>({});const [privacy,setPrivacy]=useState<any>({dm_privacy:'friends',activity_visible:true});const [blocks,setBlocks]=useState<any[]>([]);const [sessions,setSessions]=useState<any[]>([]);const [devices,setDevices]=useState<MediaDeviceInfo[]>([]);const [password,setPassword]=useState({currentPassword:'',newPassword:'',confirm:''});const [loading,setLoading]=useState(true);const [browserPermission,setBrowserPermission]=useState(typeof Notification!=='undefined'?Notification.permission:'default');
  useEffect(()=>{Promise.all([api<any>('/settings'),api<any>(`/profile/${user?.id}`),api<any>('/blocks'),api<any>('/sessions'),api<any>('/privacy')]).then(([s,p,b,ss,pr])=>{setSettings(s.settings);setProfile(p.user);setPrivacy({dm_privacy:pr.dm_privacy||'friends',activity_visible:!!pr.activity_visible});setBlocks(b.blocks);setSessions(ss.sessions);}).catch(e=>toast.show(e.message,'error')).finally(()=>setLoading(false));},[]);
  useEffect(()=>{document.documentElement.dataset.theme=settings.theme||'graphite';document.documentElement.dataset.density=settings.density||'comfortable';document.documentElement.style.removeProperty('--accent');document.documentElement.style.setProperty('--font-scale',`${settings.fontScale||100}%`);document.documentElement.dataset.motion=settings.reducedMotion?'reduced':'full';document.documentElement.dataset.contrast=settings.contrast||'normal';},[settings]);
- const saveSettings=async(next:any)=>{const merged={...settings,...next};setSettings(merged);try{const r=await put<any>('/settings',{settings:next});setSettings(r.settings);window.dispatchEvent(new CustomEvent('relay:settings',{detail:r.settings}));toast.show('Settings saved.','success');}catch(e:any){toast.show(e.message,'error');}};
+ const saveSettings=async(next:any)=>{
+  const previous=settings;
+  const merged={...settings,...next};
+  setSettings(merged);
+  try{
+   const r=await put<any>('/settings',{settings:next});
+   setSettings(r.settings);
+   window.dispatchEvent(new CustomEvent('relay:settings',{detail:r.settings}));
+   toast.show('Settings saved.','success');
+  }catch(e:any){
+   setSettings(previous);
+   toast.show(e.message,'error');
+  }
+ };
  const saveProfile=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',profile);setProfile(r.user);setUser(r.user);toast.show('Profile saved.','success');}catch(e:any){toast.show(e.message,'error');}};
  const savePrivacy=async()=>{try{await patch('/privacy',privacy);toast.show('Privacy settings saved.','success');}catch(e:any){toast.show(e.message,'error');}};
  const changePassword=async(e:React.FormEvent)=>{e.preventDefault();if(password.newPassword!==password.confirm){toast.show('New passwords do not match.','error');return;}try{await put('/account/password',{currentPassword:password.currentPassword,newPassword:password.newPassword});setPassword({currentPassword:'',newPassword:'',confirm:''});toast.show('Password changed. Other sessions were revoked.','success');const r=await api<any>('/sessions');setSessions(r.sessions);}catch(e:any){toast.show(e.message,'error');}};

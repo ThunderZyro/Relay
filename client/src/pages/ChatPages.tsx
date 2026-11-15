@@ -343,6 +343,7 @@ function VoiceJoin({channelId}:{channelId:string}){
    live.on('disconnect',()=>{
     for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);
     if(plannedRotation){plannedRotation=false;rotationReconnectTimerRef.current=window.setTimeout(()=>{if(socketRef.current===live)live.connect();},250);return;}
+    live.io.reconnection(false);
     localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
    });
    live.on('voice:forced-leave',(event:any)=>{if(event?.channelId===channelId){toast.show(event.reason||'Your voice access has ended.','info');leave();}});

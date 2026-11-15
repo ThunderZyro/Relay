@@ -588,10 +588,16 @@ app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: Authed
   if(parsed.data.userId===req.user!.id)return fail(res,400,'You are already in this conversation.');
   const targetExists=db.prepare('SELECT id FROM users WHERE id=?').get(parsed.data.userId); if(!targetExists)return fail(res,404,'User not found.');
   if(!canMessageDmPeer(req.user!.id,parsed.data.userId))return fail(res,403,'A block or privacy setting prevents adding this user.');
-  const alreadyMember=!!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,parsed.data.userId);
-  const memberCount=Number((db.prepare('SELECT COUNT(*) AS count FROM dm_members WHERE dm_id=?').get(req.params.dmId) as any)?.count||0);
-  if(!alreadyMember&&memberCount>=21)return fail(res,409,'This group has reached the 21-member limit.');
-  db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
+  const added=db.transaction(()=>{
+    db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`group-members:${req.params.dmId}`);
+    const alreadyMember=!!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,parsed.data.userId);
+    const memberCount=Number((db.prepare('SELECT COUNT(*) AS count FROM dm_members WHERE dm_id=?').get(req.params.dmId) as any)?.count||0);
+    if(!alreadyMember&&memberCount>=21)return false;
+    db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.params.dmId,parsed.data.userId);
+    return true;
+  })();
+  if(!added)return fail(res,409,'This group has reached the 21-member limit.');
+  res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.delete('/api/dms/:dmId/members/:userId', requireAuth, asyncRoute(async (req,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');

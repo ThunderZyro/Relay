@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
-import { ArrowLeft, Bell, Check, FilePlus2, Hash, MessageCircle, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, Bell, Check, FilePlus2, Hash, Images, MessageCircle, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
 import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
 
-type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; channel_id?:string|null; dm_id?:string|null };
+type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; read_by?:{user_id:string;username:string;read_at:string}[]; channel_id?:string|null; dm_id?:string|null };
 
 function compareMessages(a: ChatMessage, b: ChatMessage) {
  const timeDifference = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -21,8 +21,8 @@ const ALLOWED_ATTACHMENT_TYPES = new Set([
 const BLOCKED_ATTACHMENT_EXTENSIONS = new Set(['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1']);
 type RoomServer = { server:{id:string;name:string;description?:string}; channels:any[]; members:any[]; categories:any[] };
 
-function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=false, onLoadOlder, currentUserId, onReply, onEdit, onMore, onReact }: {
- messages:ChatMessage[]; loading?:boolean; hasOlder?:boolean; loadingOlder?:boolean; onLoadOlder?:()=>void; currentUserId?:string; onReply:(m:ChatMessage)=>void; onEdit:(m:ChatMessage)=>void; onMore:(m:ChatMessage)=>void; onReact:(m:ChatMessage,emoji:string)=>void;
+function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=false, onLoadOlder, currentUserId, onReply, onEdit, onMore, onReact, isDm=false }: {
+ messages:ChatMessage[]; loading?:boolean; hasOlder?:boolean; loadingOlder?:boolean; onLoadOlder?:()=>void; currentUserId?:string; onReply:(m:ChatMessage)=>void; onEdit:(m:ChatMessage)=>void; onMore:(m:ChatMessage)=>void; onReact:(m:ChatMessage,emoji:string)=>void; isDm?:boolean;
 }) {
  const bottomRef=useRef<HTMLDivElement>(null);
  useEffect(()=>{bottomRef.current?.scrollIntoView({block:'end',behavior:'auto'});},[messages[messages.length-1]?.id,loading]);
@@ -36,7 +36,8 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
     {!grouped&&<div className="message-meta"><b>{m.username}</b><time>{new Date(m.created_at).toLocaleString()}</time>{m.edited_at&&<small>(edited)</small>}{m.pinned? <span className="pinned-mark"><Pin size={10}/> Pinned</span>:null}</div>}
     {m.reply_to&&<div className="reply-quote"><Reply size={11}/> Reply</div>}
     <p className="message-content">{m.content}</p><time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
-    {m.attachments?.map(a=><a className="attachment" key={a.id} href={`${apiOrigin}/api/uploads/${a.id}`} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>)}
+    {own&&isDm&&!!m.read_by?.length&&<small className="message-read-status">{m.read_by.length===1?'Seen':`Seen by ${m.read_by.length}`}</small>}
+    {m.attachments?.map(a=>{const url=`${apiOrigin}/api/uploads/${a.id}`;return a.mime.startsWith('image/')?<a className="attachment-preview" key={a.id} href={url} target="_blank" rel="noreferrer"><img src={url} alt={a.filename} loading="lazy"/><small>{a.filename}</small></a>:a.mime==='video/mp4'?<div className="attachment-preview" key={a.id}><video src={url} controls preload="metadata"/><small>{a.filename}</small></div>:a.mime.startsWith('audio/')?<div className="attachment-audio" key={a.id}><audio src={url} controls preload="metadata"/><small>{a.filename}</small></div>:<a className="attachment" key={a.id} href={url} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>;})}
     {!!m.reactions?.length&&<div className="reactions">{m.reactions.map((r,i)=><button key={`${r.emoji}-${i}`} onClick={()=>onReact(m,r.emoji)}>{r.emoji}</button>)}</div>}
    </div>
    <div className="message-tools">
@@ -49,8 +50,14 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
  })}<div ref={bottomRef}/></div>;
 }
 
+function SharedMediaPanel({items,loading,onClose}:{items:any[];loading:boolean;onClose:()=>void}){
+ return <aside className="member-panel shared-media-panel"><div className="shared-media-heading"><div><b>Shared media</b><small>Latest 100 attachments</small></div><button className="icon-btn" onClick={onClose} aria-label="Close shared media">×</button></div>{loading?<Loading label="Loading shared files…"/>:items.length?<div className="shared-media-grid">{items.map(item=>{const url=`${apiOrigin}/api/uploads/${item.id}`;return <a key={item.id} className="shared-media-item" href={url} target="_blank" rel="noreferrer">{String(item.mime).startsWith('image/')?<img src={url} alt={item.filename} loading="lazy"/>:item.mime==='video/mp4'?<video src={url} muted preload="metadata"/>:<span className="shared-file-icon"><FilePlus2 size={22}/></span>}<b>{item.filename}</b><small>{item.username} · {new Date(item.created_at).toLocaleDateString()}</small></a>;})}</div>:<div className="mini-empty">No files have been shared here yet.</div>}</aside>;
+}
+
 function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply }: { conversationId:string; isDm:boolean; socket:Socket|null; onSent:(m:ChatMessage)=>void; reply:ChatMessage|null; clearReply:()=>void }) {
- const [content,setContent]=useState('');const [busy,setBusy]=useState(false);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
+ const {user}=useAuth();const draftKey=`relay:draft:${user?.id||'guest'}:${isDm?'dm':'channel'}:${conversationId}`;
+ const [content,setContent]=useState(()=>{try{return window.localStorage.getItem(draftKey)||'';}catch{return '';}});const [busy,setBusy]=useState(false);
+ useEffect(()=>{try{if(content)window.localStorage.setItem(draftKey,content);else window.localStorage.removeItem(draftKey);}catch{/* Draft saving is best effort when browser storage is restricted. */}},[content,draftKey]);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
  const send=async(e?:React.FormEvent)=>{e?.preventDefault();socket?.emit('typing:stop',typingTarget);if((!content.trim()&&!files.length)||busy)return;setBusy(true);try{
   let uploadIds:string[]=[];
   if(files.length){const form=new FormData();files.forEach(f=>form.append('files',f));const uploaded=await post<{uploads:{id:string}[]}>('/uploads',form);uploadIds=uploaded.uploads.map(u=>u.id);}
@@ -183,6 +190,11 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
    if(!isCurrentRoom())return;
    setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));
   });
+  live.on('message:read',(event:{userId:string;username:string;messageIds:string[];readAt:string})=>{
+   if(!isCurrentRoom()||!Array.isArray(event?.messageIds))return;
+   const readIds=new Set(event.messageIds);
+   setMessages(current=>current.map(message=>readIds.has(message.id)?{...message,read_by:[...(message.read_by||[]).filter(reader=>reader.user_id!==event.userId),{user_id:event.userId,username:event.username,read_at:event.readAt}]}:message));
+  });
   live.on('message:updated',(message:ChatMessage)=>{
    if(isCurrentRoom())setMessages(current=>current.map(item=>item.id===message.id?message:item).sort(compareMessages));
   });
@@ -255,7 +267,7 @@ function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:bo
 }
 
 export function ChannelPage(){
- const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);
+ const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [sharedOpen,setSharedOpen]=useState(false);const [sharedItems,setSharedItems]=useState<any[]>([]);const [sharedLoading,setSharedLoading]=useState(false);
  useEffect(()=>{
   let active=true;
   if(!serverId){setRoom(null);return()=>{active=false;};}
@@ -275,6 +287,7 @@ export function ChannelPage(){
  },[serverId,navigate]);
  useEffect(()=>{setSelected(channelId);setReply(null);},[channelId]);
  const channel=room?.channels.find(c=>c.id===selected);const chat=useRoomMessages(channel?.id,false);
+ const loadShared=async()=>{if(!channel?.id)return;setSharedOpen(true);setMembersOpen(false);setSharedLoading(true);try{const result=await api<any>(`/channels/${channel.id}/attachments`);setSharedItems(result.attachments||[]);}catch(error:any){toast.show(error.message,'error');}finally{setSharedLoading(false);}};
  const typing=chat.typing;
  useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
@@ -282,11 +295,11 @@ export function ChannelPage(){
  if(!channel)return <div className="page-content"><EmptyState title="No channel selected" description="Create a channel in server settings or choose another server." action={<Link to={`/server/${serverId}/settings/overview`}>Server settings</Link>}/></div>;
  if(channel.type==='voice')return <div className="page-content voice-page"><div className="voice-card"><Volume2 size={32}/><h1>{channel.name}</h1><p>Voice uses peer-to-peer audio, with optional TURN relay support when configured by the server.</p><VoiceJoin channelId={channel.id}/><div className="voice-controls"><Button variant="secondary" onClick={()=>setMembersOpen(v=>!v)}><Users size={15}/> {room.members.length} members</Button><Button variant="secondary" onClick={()=>navigate(`/server/${serverId}/settings/overview`)}>Channel settings</Button></div>{membersOpen&&<div className="voice-member-list">{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name||'Member'}</small></div>)}</div>}</div></div>;
  return <div className="chat-page">
-  <div className="chat-heading"><div><h2><span>#</span>{channel.name}</h2><p>{channel.topic||room.server.description||'Conversation starts here.'}</p></div><div className="chat-head-actions"><button className="icon-btn" onClick={()=>setMembersOpen(v=>!v)} title="Toggle members"><Users size={17}/></button><Link className="icon-btn" to={`/server/${serverId}/settings/overview`} title="Server settings"><MoreHorizontal size={18}/></Link></div></div>
-  <div className="chat-main"><div className="chat-scroll"><MessageList messages={chat.messages} loading={chat.loading} hasOlder={chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>
-  {membersOpen&&<aside className="member-panel"><div className="section-label">MEMBERS · {room.members.length}</div>{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+  <div className="chat-heading"><div><h2><span>#</span>{channel.name}</h2><p>{channel.topic||room.server.description||'Conversation starts here.'}</p></div><div className="chat-head-actions"><button className={`icon-btn ${sharedOpen?'active':''}`} onClick={()=>void loadShared()} title="Shared media"><Images size={17}/></button><button className="icon-btn" onClick={()=>{setSharedOpen(false);setMembersOpen(v=>!v);}} title="Toggle members"><Users size={17}/></button><Link className="icon-btn" to={`/server/${serverId}/settings/overview`} title="Server settings"><MoreHorizontal size={18}/></Link></div></div>
+  <div className="chat-main"><div className="chat-scroll"><MessageList messages={chat.messages} isDm={false} loading={chat.loading} hasOlder={chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>
+  {membersOpen&&<aside className="member-panel"><div className="section-label">MEMBERS · {room.members.length}</div>{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}{sharedOpen&&<SharedMediaPanel items={sharedItems} loading={sharedLoading} onClose={()=>setSharedOpen(false)}/>}</div>
   {typing&&<div className="typing-note">{typing}</div>}
-  <ChatComposer conversationId={channel.id} isDm={false} socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
+  <ChatComposer key={channel.id} conversationId={channel.id} isDm={false} socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
   {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}
   {actionMessage&&<MessageActions message={actionMessage} isDm={false} onClose={()=>setActionMessage(null)}/>}
  </div>;
@@ -371,7 +384,7 @@ function VoiceJoin({channelId}:{channelId:string}){
 }
 
 export function DmPage(){
- const {conversationId}=useParams();const {user}=useAuth();const toast=useToast();const navigate=useNavigate();const [conversations,setConversations]=useState<any[]>([]);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [messageSearchOpen,setMessageSearchOpen]=useState(false);const [messageSearch,setMessageSearch]=useState('');
+ const {conversationId}=useParams();const {user}=useAuth();const toast=useToast();const navigate=useNavigate();const [conversations,setConversations]=useState<any[]>([]);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [sharedOpen,setSharedOpen]=useState(false);const [sharedItems,setSharedItems]=useState<any[]>([]);const [sharedLoading,setSharedLoading]=useState(false);const [messageSearchOpen,setMessageSearchOpen]=useState(false);const [messageSearch,setMessageSearch]=useState('');
  useEffect(()=>{
   let active=true;
   const refresh=async()=>{
@@ -391,17 +404,18 @@ export function DmPage(){
   return()=>{active=false;window.clearInterval(timer);};
  },[conversationId,navigate,toast]);
  const dm=conversations.find(d=>d.id===conversationId);const others=dm?.members?.filter((m:any)=>m.id!==user?.id)||[];const title=dm?.name||others.map((m:any)=>m.username).join(', ')||'Direct messages';const chat=useRoomMessages(conversationId,true);
+ const loadShared=async()=>{if(!conversationId)return;setSharedOpen(true);setMembersOpen(false);setSharedLoading(true);try{const result=await api<any>(`/dms/${conversationId}/attachments`);setSharedItems(result.attachments||[]);}catch(error:any){toast.show(error.message,'error');}finally{setSharedLoading(false);}};
  const [searchMatches,setSearchMatches]=useState<ChatMessage[]|null>(null);const [searchBusy,setSearchBusy]=useState(false);const searchGeneration=useRef(0);
  useEffect(()=>{const query=messageSearch.trim();const generation=++searchGeneration.current;if(!messageSearchOpen||query.length<2||!conversationId){setSearchMatches(null);setSearchBusy(false);return;}setSearchMatches(null);setSearchBusy(true);const timer=window.setTimeout(()=>api<{messages:ChatMessage[]}>(`/dms/${conversationId}/messages/search?q=${encodeURIComponent(query)}`).then(result=>{if(generation===searchGeneration.current)setSearchMatches(result.messages||[]);}).catch(error=>{if(generation===searchGeneration.current){setSearchMatches([]);toast.show(error.message,'error');}}).finally(()=>{if(generation===searchGeneration.current)setSearchBusy(false);}),250);return()=>window.clearTimeout(timer);},[conversationId,messageSearch,messageSearchOpen]);
  useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
  if(!conversationId)return <div className="dm-empty-stage"><div className="dm-empty-illustration"><MessageCircle size={34}/><span>R</span></div><p className="dm-empty-eyebrow">RELAY MESSAGES</p><h2>Your conversations, all together.</h2><p className="dm-empty-copy">Pick a chat from the list, message a friend, or bring your group into one place.</p><Link className="btn primary" to="/friends"><MessageSquarePlus size={16}/> Start a conversation</Link></div>;
  const query=messageSearch.trim();const visibleMessages=query.length>=2?(searchMatches||[]):query?chat.messages.filter(message=>message.content.toLowerCase().includes(query.toLowerCase())):chat.messages;
- return <div className="chat-page dm-chat-page"><div className="chat-heading dm-chat-heading"><div className="dm-title-line">{others.length===1?<Avatar name={others[0].username} src={others[0].avatar} size="lg" presence={others[0].presence}/>:<span className="dm-group-avatar"><UsersRound size={21}/></span>}<div className="dm-heading-copy"><h2>{title}</h2><p>{dm?.is_group?'Group · '+(dm?.members?.length||0)+' members':others[0]?.status_text||others[0]?.presence||'Direct message'}</p></div></div><div className="chat-head-actions"><button className={`icon-btn ${messageSearchOpen?'active':''}`} onClick={()=>{setMessageSearchOpen(v=>!v);setMessageSearch('');}} title="Search this chat"><Search size={18}/></button><button className={`icon-btn ${membersOpen?'active':''}`} onClick={()=>setMembersOpen(v=>!v)} title="Conversation members"><Users size={18}/></button></div></div>
+ return <div className="chat-page dm-chat-page"><div className="chat-heading dm-chat-heading"><div className="dm-title-line">{others.length===1?<Avatar name={others[0].username} src={others[0].avatar} size="lg" presence={others[0].presence}/>:<span className="dm-group-avatar"><UsersRound size={21}/></span>}<div className="dm-heading-copy"><h2>{title}</h2><p>{dm?.is_group?'Group · '+(dm?.members?.length||0)+' members':others[0]?.status_text||others[0]?.presence||'Direct message'}</p></div></div><div className="chat-head-actions"><button className={`icon-btn ${messageSearchOpen?'active':''}`} onClick={()=>{setMessageSearchOpen(v=>!v);setMessageSearch('');}} title="Search this chat"><Search size={18}/></button><button className={`icon-btn ${sharedOpen?'active':''}`} onClick={()=>void loadShared()} title="Shared media"><Images size={18}/></button><button className={`icon-btn ${membersOpen?'active':''}`} onClick={()=>{setSharedOpen(false);setMembersOpen(v=>!v);}} title="Conversation members"><Users size={18}/></button></div></div>
  {messageSearchOpen&&<div className="dm-search-inline"><Search size={15}/><input autoFocus value={messageSearch} onChange={e=>setMessageSearch(e.target.value)} placeholder="Search messages in this chat"/><span>{visibleMessages.length} matches</span><button onClick={()=>{setMessageSearchOpen(false);setMessageSearch('');}} aria-label="Close search"><X size={15}/></button></div>}
- <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={visibleMessages} loading={chat.loading||searchBusy} hasOlder={!messageSearch&&chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">IN THIS CHAT · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+ <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={visibleMessages} isDm={true} loading={chat.loading||searchBusy} hasOlder={!messageSearch&&chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">IN THIS CHAT · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}{sharedOpen&&<SharedMediaPanel items={sharedItems} loading={sharedLoading} onClose={()=>setSharedOpen(false)}/>}</div>
  {chat.typing&&<div className="typing-note">{chat.typing}</div>}
- <ChatComposer conversationId={conversationId} isDm socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
+ <ChatComposer key={conversationId} conversationId={conversationId} isDm socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
  {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}
  {actionMessage&&<MessageActions message={actionMessage} isDm onClose={()=>setActionMessage(null)}/>}
  </div>;

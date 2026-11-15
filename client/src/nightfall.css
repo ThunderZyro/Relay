@@ -77,3 +77,279 @@ body{background:var(--bg);color:var(--text)}button:focus-visible,a:focus-visible
 :root[data-theme="slate"] .message-content,:root[data-theme="warm"] .message-content,:root[data-theme="slate"] .message.incoming .message-content,:root[data-theme="warm"] .message.incoming .message-content{background:var(--panel-2);border-color:var(--line);color:var(--text)}
 :root[data-theme="slate"] .message.own .message-content,:root[data-theme="warm"] .message.own .message-content{background:var(--accent-soft);border-color:var(--line-strong);color:var(--text)}
 :root[data-theme="slate"] .home-hero h1,:root[data-theme="warm"] .home-hero h1,:root[data-theme="slate"] .clubs-intro h1,:root[data-theme="warm"] .clubs-intro h1,:root[data-theme="slate"] .home-board-heading h2,:root[data-theme="warm"] .home-board-heading h2,:root[data-theme="slate"] .club-card h2,:root[data-theme="warm"] .club-card h2,:root[data-theme="slate"] .profile-card h1,:root[data-theme="warm"] .profile-card h1,:root[data-theme="slate"] .settings-card h3,:root[data-theme="warm"] .settings-card h3{color:var(--text)}
+
+
+/* User-selected Boost appearance tokens and free compact-layout controls. */
+:root[data-theme="custom"] body,
+:root[data-theme="custom"] .app-shell,
+:root[data-theme="custom"] .clubhouse-shell,
+:root[data-theme="custom"] .main-area,
+:root[data-theme="custom"] .workspace,
+:root[data-theme="custom"] .chat-page,
+:root[data-theme="custom"] .chat-main,
+:root[data-theme="custom"] .server-rail {
+  background:var(--bg)!important;
+  color:var(--text)!important;
+}
+:root[data-theme="custom"] .side-panel,
+:root[data-theme="custom"] .topbar,
+:root[data-theme="custom"] .chat-heading,
+:root[data-theme="custom"] .member-panel,
+:root[data-theme="custom"] .settings-nav,
+:root[data-theme="custom"] .settings-card,
+:root[data-theme="custom"] .home-board,
+:root[data-theme="custom"] .home-shortcut,
+:root[data-theme="custom"] .club-card,
+:root[data-theme="custom"] .profile-card,
+:root[data-theme="custom"] .friend-row,
+:root[data-theme="custom"] .event-card,
+:root[data-theme="custom"] .help-card,
+:root[data-theme="custom"] .feature-card,
+:root[data-theme="custom"] .modal,
+:root[data-theme="custom"] .notification-popover {
+  background:var(--panel)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme="custom"] .home-hero,
+:root[data-theme="custom"] .clubs-intro,
+:root[data-theme="custom"] .dm-empty-stage,
+:root[data-theme="custom"] .composer,
+:root[data-theme="custom"] .search-input,
+:root[data-theme="custom"] .dm-search-inline,
+:root[data-theme="custom"] .message-content,
+:root[data-theme="custom"] .message.incoming .message-content {
+  background:var(--panel-2)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--text)!important;
+}
+:root[data-theme="custom"] .message.own .message-content,
+:root[data-theme="custom"] .message.own .message-body,
+:root[data-theme="custom"] .side-item.selected,
+:root[data-theme="custom"] .rail-link.active {
+  background:var(--accent-soft)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--text)!important;
+}
+:root[data-theme="custom"] .btn.primary,
+:root[data-theme="custom"] .composer-send,
+:root[data-theme="custom"] .install-relay-btn {
+  background:var(--accent)!important;
+  border-color:var(--accent)!important;
+  color:var(--button-text)!important;
+}
+:root[data-theme="custom"] .btn.primary:hover,
+:root[data-theme="custom"] .composer-send:hover {
+  background:var(--accent-hover)!important;
+  border-color:var(--accent-hover)!important;
+}
+:root[data-theme="custom"] .page-header h1,
+:root[data-theme="custom"] .home-hero h1,
+:root[data-theme="custom"] .clubs-intro h1,
+:root[data-theme="custom"] .home-board-heading h2,
+:root[data-theme="custom"] .club-card h2,
+:root[data-theme="custom"] .profile-card h1,
+:root[data-theme="custom"] .settings-card h3,
+:root[data-theme="custom"] .message-meta b,
+:root[data-theme="custom"] .dm-item-copy b,
+:root[data-theme="custom"] .crumb-title {
+  color:var(--text)!important;
+}
+:root[data-theme="custom"] .muted-note,
+:root[data-theme="custom"] .page-header p,
+:root[data-theme="custom"] .message-meta time,
+:root[data-theme="custom"] .message-meta small,
+:root[data-theme="custom"] .dm-item-copy small,
+:root[data-theme="custom"] .settings-nav small {
+  color:var(--muted)!important;
+}
+.side-panel { width:var(--custom-sidebar-width,292px); }
+.message-content,.message-body,.composer,.settings-card,.profile-card,.club-card {
+  border-radius:var(--custom-message-radius,12px);
+}
+body,button,input,select,textarea {
+  font-family:var(--relay-font-family,Inter,ui-sans-serif,system-ui,sans-serif);
+}
+:root[data-density="compact"] .side-item {height:31px;min-height:31px}
+:root[data-density="compact"] .dm-item {height:48px;min-height:48px;padding-top:5px;padding-bottom:5px}
+:root[data-density="compact"] .member-row {height:29px}
+:root[data-density="compact"] .message {padding-top:2px;padding-bottom:2px}
+:root[data-message-layout="compact"] .message-content {line-height:1.35}
+:root[data-message-layout="compact"] .message-body {padding-top:5px;padding-bottom:5px}
+
+@media(max-width:1050px){.side-panel{width:min(270px,var(--custom-sidebar-width,292px))}}
+@media(max-width:760px){.side-panel{width:min(270px,var(--custom-sidebar-width,292px))}}
+@media(max-width:540px){.side-panel.show{width:min(300px,calc(100vw - 64px))}}
+:root[data-theme="custom"]{color-scheme:dark}
+
+
+/* Shared theme tokens across the whole Relay app (free presets and Boost). */
+:root[data-theme] .server-rail,
+:root[data-theme] .side-panel,
+:root[data-theme] .user-panel,
+:root[data-theme] .settings-nav,
+:root[data-theme] .member-panel,
+:root[data-theme] .notification-popover,
+:root[data-theme] .modal,
+:root[data-theme] .settings-card,
+:root[data-theme] .panel-card,
+:root[data-theme] .conversation-card,
+:root[data-theme] .feature-card,
+:root[data-theme] .help-card,
+:root[data-theme] .voice-card,
+:root[data-theme] .club-card {
+  background:var(--panel)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .topbar,
+:root[data-theme] .chat-heading,
+:root[data-theme] .dm-chat-heading,
+:root[data-theme] .side-top,
+:root[data-theme] .modal>header,
+:root[data-theme] .notification-popover header {
+  background:var(--panel)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .app-shell,
+:root[data-theme] .main-area,
+:root[data-theme] .workspace,
+:root[data-theme] .chat-page,
+:root[data-theme] .chat-main,
+:root[data-theme] .dm-chat-page .chat-main,
+:root[data-theme] .page-content {
+  background-color:var(--bg)!important;
+  color:var(--text);
+}
+:root[data-theme] .welcome-card,
+:root[data-theme] .home-hero,
+:root[data-theme] .clubs-intro,
+:root[data-theme] .composer,
+:root[data-theme] .search-input,
+:root[data-theme] .dm-search,
+:root[data-theme] .dm-search-inline,
+:root[data-theme] .voice-orb,
+:root[data-theme] .empty-icon,
+:root[data-theme] .event-date {
+  background:var(--panel-2)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .side-item.selected,
+:root[data-theme] .rail-home.active,
+:root[data-theme] .rail-link.active,
+:root[data-theme] .dm-item.selected,
+:root[data-theme] .tabs button.active {
+  background:var(--accent-soft)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .side-item.selected svg,
+:root[data-theme] .rail-link.active svg {
+  color:var(--accent)!important;
+}
+:root[data-theme] .btn.primary,
+:root[data-theme] .composer-send,
+:root[data-theme] .install-relay-btn,
+:root[data-theme] .invite-logo,
+:root[data-theme] .relay-mark,
+:root[data-theme] .brand-mark {
+  background:var(--accent)!important;
+  border-color:var(--accent)!important;
+  color:var(--button-text)!important;
+}
+:root[data-theme] .btn.primary:hover,
+:root[data-theme] .composer-send:hover,
+:root[data-theme] .install-relay-btn:hover {
+  background:var(--accent-hover)!important;
+  border-color:var(--accent-hover)!important;
+}
+:root[data-theme] .btn.secondary,
+:root[data-theme] .btn.ghost:hover,
+:root[data-theme] .icon-btn:hover,
+:root[data-theme] .message-tools {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .message.own .message-body,
+:root[data-theme] .message.own .message-content,
+:root[data-theme] .reactions button {
+  background:var(--accent-soft)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .message.incoming .message-body,
+:root[data-theme] .message.incoming .message-content,
+:root[data-theme] .attachment,
+:root[data-theme] .reply-banner,
+:root[data-theme] .editing-banner,
+:root[data-theme] .file-chips span {
+  background:var(--panel-2)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .page-header h1,
+:root[data-theme] .page-header h2,
+:root[data-theme] .welcome-card h2,
+:root[data-theme] .home-hero h1,
+:root[data-theme] .clubs-intro h1,
+:root[data-theme] .settings-card h3,
+:root[data-theme] .settings-nav h2,
+:root[data-theme] .message-meta b,
+:root[data-theme] .dm-item-copy b,
+:root[data-theme] .crumb-title,
+:root[data-theme] .voice-card h2,
+:root[data-theme] .profile-card h1 {
+  color:var(--text)!important;
+}
+:root[data-theme] .muted-note,
+:root[data-theme] .page-header p,
+:root[data-theme] .settings-nav small,
+:root[data-theme] .message-meta time,
+:root[data-theme] .message-meta small,
+:root[data-theme] .dm-item-copy small,
+:root[data-theme] .chat-heading p,
+:root[data-theme] .welcome-card p,
+:root[data-theme] .voice-card>p {
+  color:var(--muted)!important;
+}
+:root[data-theme] .side-item,
+:root[data-theme] .side-action,
+:root[data-theme] .icon-btn,
+:root[data-theme] .settings-nav>a:not(.settings-back) {
+  color:var(--muted);
+}
+:root[data-theme] .settings-nav>a.active,
+:root[data-theme] .settings-nav>a:hover,
+:root[data-theme] .side-item:hover {
+  background:var(--panel-3);
+  color:var(--text);
+}
+:root[data-theme] .field input,
+:root[data-theme] .field textarea,
+:root[data-theme] .field select,
+:root[data-theme] .modal .field input,
+:root[data-theme] .modal .field select {
+  background:var(--bg);
+  border-color:var(--line);
+  color:var(--text);
+}
+:root[data-theme] .theme-free-label {
+  background:var(--accent-soft);
+  border-color:var(--line-strong);
+  color:var(--text);
+}
+:root[data-theme="light"] .btn.primary,
+:root[data-theme="light"] .composer-send,
+:root[data-theme="light"] .invite-logo,
+:root[data-theme="light"] .relay-mark,
+:root[data-theme="light"] .brand-mark {
+  color:var(--button-text)!important;
+}
+
+:root[data-theme="custom"] body,
+:root[data-theme="custom"] body * {
+  font-family:var(--relay-font-family,Inter,ui-sans-serif,system-ui,sans-serif)!important;
+}

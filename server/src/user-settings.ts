@@ -1,6 +1,6 @@
 import {z} from 'zod';
 
-const DEFAULT_USER_SETTINGS = {
+export const DEFAULT_USER_SETTINGS = {
   theme:'graphite',density:'comfortable',messageLayout:'cozy',fontScale:100,reducedMotion:false,contrast:'normal',
   quietMode:false,dmNotifications:true,mentionNotifications:true,browserNotifications:false,
   keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'},
@@ -15,7 +15,7 @@ const customThemeColorsSchema=z.object({
   accent:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),accentHover:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   accentSoft:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),buttonText:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
 }).strict();
-const userSettingsPatchSchema=z.object({
+export const userSettingsPatchSchema=z.object({
   theme:z.enum(['graphite','slate','warm','light','custom']).optional(),
   density:z.enum(['comfortable','compact']).optional(),messageLayout:z.enum(['cozy','compact']).optional(),
   fontScale:z.number().int().min(85).max(125).optional(),reducedMotion:z.boolean().optional(),contrast:z.enum(['normal','high']).optional(),

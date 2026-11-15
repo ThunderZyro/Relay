@@ -50,7 +50,7 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
    <Link to="/login" className="auth-brand" aria-label="Relay home">
     <span className="brand-mark">R</span><span>relay</span>
    </Link>
-   <h1 className="auth-tagline">Your people. Your space.</h1>
+   <h1 className="auth-tagline">A friendly place to say hello.</h1>
 
    <section className="auth-form-side">
     <div className="auth-form-top">

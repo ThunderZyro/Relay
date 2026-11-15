@@ -1,5 +1,5 @@
 /* Relay Nightfall: clear dark surfaces, calm colour and original illustrations. */
-:root,:root[data-theme="graphite"],:root[data-theme="dark"]{--bg:#1a1e26;--panel:#222833;--panel-2:#292f3a;--panel-3:#333b48;--line:#363f4c;--line-strong:#4a5665;--muted:#a5afbd;--text:#eef2f7;--accent:#7185ed;--accent-hover:#8295f5;--accent-soft:#303a60;--button-text:#fff;--good:#75d0a9;--danger:#ed838b;color-scheme:dark}
+:root:not([data-theme]),:root[data-theme="graphite"],:root[data-theme="dark"]{--bg:#1a1e26;--panel:#222833;--panel-2:#292f3a;--panel-3:#333b48;--line:#363f4c;--line-strong:#4a5665;--muted:#a5afbd;--text:#eef2f7;--accent:#7185ed;--accent-hover:#8295f5;--accent-soft:#303a60;--button-text:#fff;--good:#75d0a9;--danger:#ed838b;color-scheme:dark}
 :root[data-theme="slate"]{--bg:#19212b;--panel:#222d39;--panel-2:#2a3744;--panel-3:#344453;--line:#3a4a59;--line-strong:#526476;--muted:#a8b8c7;--text:#eef4f8;--accent:#78a8e5;--accent-hover:#8eb9f0;--accent-soft:#2b4563;--button-text:#132233;color-scheme:dark}
 :root[data-theme="warm"]{--bg:#211f20;--panel:#2b282a;--panel-2:#353134;--panel-3:#413a3e;--line:#4d454b;--line-strong:#645961;--muted:#b8abb2;--text:#f2ecef;--accent:#c08b9a;--accent-hover:#d19aaa;--accent-soft:#513c48;--button-text:#251a20;color-scheme:dark}
 body{background:var(--bg);color:var(--text)}button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}::selection{background:var(--accent-soft);color:var(--text)}
@@ -55,3 +55,16 @@ body{background:var(--bg);color:var(--text)}button:focus-visible,a:focus-visible
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
 .invite-logo img{display:block;width:100%;height:100%;object-fit:contain}
+
+/* Message layout is a real per-account preference. */
+:root[data-message-layout="compact"] .message{padding-top:3px;padding-bottom:3px}
+:root[data-message-layout="compact"] .message-content{padding:6px 9px;line-height:1.4}
+:root[data-message-layout="cozy"] .message-content{line-height:1.65}
+
+/* The light theme must not inherit Nightfall's hard-coded dark card surfaces. */
+:root[data-theme="light"] body,:root[data-theme="light"] .app-shell,:root[data-theme="light"] .clubhouse-shell{background:var(--bg);color:var(--text)}
+:root[data-theme="light"] .side-panel,:root[data-theme="light"] .topbar,:root[data-theme="light"] .chat-heading,:root[data-theme="light"] .member-panel,:root[data-theme="light"] .home-board,:root[data-theme="light"] .home-shortcut,:root[data-theme="light"] .clubs-intro,:root[data-theme="light"] .clubs-search-bar,:root[data-theme="light"] .club-card,:root[data-theme="light"] .settings-nav,:root[data-theme="light"] .settings-card,:root[data-theme="light"] .notification-popover,:root[data-theme="light"] .modal{background:var(--panel);border-color:var(--line);color:var(--text)}
+:root[data-theme="light"] .composer,:root[data-theme="light"] .dm-search-inline,:root[data-theme="light"] .search-input,:root[data-theme="light"] .field input,:root[data-theme="light"] .field textarea,:root[data-theme="light"] .field select{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+:root[data-theme="light"] .message-content,:root[data-theme="light"] .message.incoming .message-content{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+:root[data-theme="light"] .message.own .message-content{background:#dce7f1;border-color:#c5d5e4;color:#263746}
+:root[data-theme="light"] .home-hero h1,:root[data-theme="light"] .clubs-intro h1,:root[data-theme="light"] .home-board-heading h2,:root[data-theme="light"] .club-card h2,:root[data-theme="light"] .profile-card h1,:root[data-theme="light"] .settings-card h3{color:var(--text)}

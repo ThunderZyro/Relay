@@ -89,9 +89,9 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
  const [hasOlder,setHasOlder]=useState(false);
  const [loadingOlder,setLoadingOlder]=useState(false);
  const [socket,setSocket]=useState<Socket|null>(null);
- const [typing,setTyping]=useState('');
+ const [typingUsers,setTypingUsers]=useState<Array<{id:string;username:string}>>([]);
  const toast=useToast();
- const typingTimer=useRef<number|undefined>(undefined);
+ const typingTimers=useRef<Map<string,number>>(new Map());
  const requestGeneration=useRef(0);
  const route=isDm? `/dms/${id}/messages` : `/channels/${id}/messages`;
 
@@ -164,6 +164,9 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
    reconnectionDelay:500,
    reconnectionDelayMax:5000
   });
+  let plannedRotation=false;let rotationTimer:number|undefined;
+  live.on('relay:rotate',()=>{plannedRotation=true;});
+  live.on('disconnect',()=>{if(plannedRotation){plannedRotation=false;rotationTimer=window.setTimeout(()=>{if(isCurrentRoom())live.connect();},250);}});
   setSocket(live);
   const joinEvent=isDm?'room:join-dm':'room:join-channel';
   live.on('connect',()=>{
@@ -184,19 +187,30 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
   live.on('message:reactions',(update:{messageId:string;reactions:ChatMessage['reactions']})=>{
    if(isCurrentRoom())setMessages(current=>current.map(item=>item.id===update.messageId?{...item,reactions:update.reactions}:item));
   });
+  const removeTypingUser=(userId:string)=>{
+   const timer=typingTimers.current.get(userId);if(timer)window.clearTimeout(timer);
+   typingTimers.current.delete(userId);
+   setTypingUsers(current=>current.filter(item=>item.id!==userId));
+  };
   live.on('typing',(event:any)=>{
    if(!isCurrentRoom())return;
-   if(typingTimer.current)window.clearTimeout(typingTimer.current);
-   setTyping(event.active?`${event.username} is typing…`:'');
-   if(event.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);
+   const userId=String(event?.userId||'');if(!userId)return;
+   removeTypingUser(userId);
+   if(!event.active)return;
+   const username=String(event.username||'Someone');
+   setTypingUsers(current=>[...current.filter(item=>item.id!==userId),{id:userId,username}]);
+   const timer=window.setTimeout(()=>{if(typingTimers.current.get(userId)===timer){typingTimers.current.delete(userId);setTypingUsers(current=>current.filter(item=>item.id!==userId));}},5000);
+   typingTimers.current.set(userId,timer);
   });
   const syncTimer=window.setInterval(()=>{if(isCurrentRoom())void refreshLatest();},15000);
   return()=>{
    window.clearInterval(syncTimer);
+   if(rotationTimer)window.clearTimeout(rotationTimer);
    live.disconnect();
-   if(typingTimer.current)window.clearTimeout(typingTimer.current);
+   for(const timer of typingTimers.current.values())window.clearTimeout(timer);
+   typingTimers.current.clear();
    setSocket(current=>current===live?null:current);
-   setTyping('');
+   setTypingUsers([]);
   };
  },[id,isDm]);
 
@@ -222,6 +236,7 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
   if(!belongsToRoom)return;
   setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));
  };
+ const typing=typingUsers.length?`${typingUsers.map(item=>item.username).join(', ')} ${typingUsers.length===1?'is':'are'} typing…`:'';
  return {messages,setMessages,loading,hasOlder,loadingOlder,loadOlder,typing,socket,add,reload:load};
 }
 function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
@@ -256,6 +271,7 @@ export function ChannelPage(){
  useEffect(()=>{setSelected(channelId);setReply(null);},[channelId]);
  const channel=room?.channels.find(c=>c.id===selected);const chat=useRoomMessages(channel?.id,false);
  const typing=chat.typing;
+ useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
  if(!serverId)return <Loading/>;if(!room)return <Loading label="Loading server"/>;
  if(!channel)return <div className="page-content"><EmptyState title="No channel selected" description="Create a channel in server settings or choose another server." action={<Link to={`/server/${serverId}/settings/overview`}>Server settings</Link>}/></div>;
@@ -274,7 +290,7 @@ export function ChannelPage(){
 type VoiceSignal = {type:'offer'|'answer';sdp:RTCSessionDescriptionInit}|{type:'candidate';candidate:RTCIceCandidateInit};
 function VoiceJoin({channelId}:{channelId:string}){
  const [joined,setJoined]=useState(false);const [joining,setJoining]=useState(false);const [muted,setMuted]=useState(false);const [deafened,setDeafened]=useState(false);const [peers,setPeers]=useState<any[]>([]);const [remoteStreams,setRemoteStreams]=useState<Record<string,MediaStream>>({});const toast=useToast();
- const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());
+ const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());const rotationReconnectTimerRef=useRef<number|undefined>(undefined);
  const emitSignal=(peerId:string,payload:VoiceSignal)=>socketRef.current?.emit('webrtc:signal',{toSocketId:peerId,payload,channelId});
  const createPeer=async(peerId:string,offerer:boolean):Promise<RTCPeerConnection>=>{
   const existing=connectionsRef.current.get(peerId);if(existing)return existing;
@@ -301,6 +317,7 @@ function VoiceJoin({channelId}:{channelId:string}){
  };
  const removePeer=(peerId:string)=>{const pc=connectionsRef.current.get(peerId);pc?.close();connectionsRef.current.delete(peerId);pendingCandidatesRef.current.delete(peerId);setRemoteStreams(current=>{const next={...current};delete next[peerId];return next;});setPeers(current=>current.filter(peer=>peer.socketId!==peerId));};
  const leave=()=>{
+  if(rotationReconnectTimerRef.current)window.clearTimeout(rotationReconnectTimerRef.current);rotationReconnectTimerRef.current=undefined;
   socketRef.current?.emit('voice:leave',channelId);socketRef.current?.disconnect();socketRef.current=null;
   for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();
   localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
@@ -311,7 +328,8 @@ function VoiceJoin({channelId}:{channelId:string}){
   try{
    if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microphone access requires HTTPS or localhost and a supported browser.');
    const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});localStreamRef.current=stream;
-   const live=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});socketRef.current=live;
+   const live=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});socketRef.current=live;let plannedRotation=false;
+   live.on('relay:rotate',()=>{plannedRotation=true;});
    const restoreVoiceRoom=()=>{
     for(const connection of connectionsRef.current.values())connection.close();
     connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);
@@ -322,7 +340,11 @@ function VoiceJoin({channelId}:{channelId:string}){
     });
    };
    live.on('connect',restoreVoiceRoom);
-   live.on('disconnect',()=>{for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);});
+   live.on('disconnect',()=>{
+    for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);
+    if(plannedRotation){plannedRotation=false;rotationReconnectTimerRef.current=window.setTimeout(()=>{if(socketRef.current===live)live.connect();},250);return;}
+    localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
+   });
    live.on('voice:forced-leave',(event:any)=>{if(event?.channelId===channelId){toast.show(event.reason||'Your voice access has ended.','info');leave();}});
    live.on('voice:participant',(participant:any)=>{
     if(participant.state==='left'){removePeer(participant.socketId);return;}
@@ -335,7 +357,7 @@ function VoiceJoin({channelId}:{channelId:string}){
  };
  const setAudioState=(nextMuted:boolean,nextDeafened:boolean)=>{setMuted(nextMuted);setDeafened(nextDeafened);localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!nextMuted;});socketRef.current?.emit('voice:state',{channelId,muted:nextMuted,deafened:nextDeafened});};
  useEffect(()=>{localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!muted;});},[muted]);
- useEffect(()=>()=>{socketRef.current?.disconnect();localStreamRef.current?.getTracks().forEach(track=>track.stop());for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();},[]);
+ useEffect(()=>()=>{if(rotationReconnectTimerRef.current)window.clearTimeout(rotationReconnectTimerRef.current);socketRef.current?.disconnect();localStreamRef.current?.getTracks().forEach(track=>track.stop());for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();},[]);
  return <div className="voice-join">
   <Button onClick={()=>joined?leave():void join()} disabled={joining}>{joining?'Connecting…':joined?'Leave voice':'Join voice'}</Button>
   {joined&&<><Button variant="secondary" onClick={()=>setAudioState(!muted,deafened)}>{muted?<VolumeX size={15}/>:<Volume2 size={15}/>} {muted?'Unmute':'Mute'}</Button><Button variant="secondary" onClick={()=>setAudioState(muted,!deafened)}>{deafened?'Enable audio':'Deafen'}</Button><p>{peers.length+1} participant(s) · peer-to-peer audio</p><div className="voice-audio" aria-label="Remote participant audio">{Object.entries(remoteStreams).map(([peerId,stream])=><audio key={peerId} autoPlay playsInline muted={deafened} ref={element=>{if(element&&element.srcObject!==stream){element.srcObject=stream;void element.play().catch(()=>{});}}}/>)}</div></>}
@@ -363,12 +385,15 @@ export function DmPage(){
   return()=>{active=false;window.clearInterval(timer);};
  },[conversationId,navigate,toast]);
  const dm=conversations.find(d=>d.id===conversationId);const others=dm?.members?.filter((m:any)=>m.id!==user?.id)||[];const title=dm?.name||others.map((m:any)=>m.username).join(', ')||'Direct messages';const chat=useRoomMessages(conversationId,true);
+ const [searchMatches,setSearchMatches]=useState<ChatMessage[]|null>(null);const [searchBusy,setSearchBusy]=useState(false);const searchGeneration=useRef(0);
+ useEffect(()=>{const query=messageSearch.trim();const generation=++searchGeneration.current;if(!messageSearchOpen||query.length<2||!conversationId){setSearchMatches(null);setSearchBusy(false);return;}setSearchMatches(null);setSearchBusy(true);const timer=window.setTimeout(()=>api<{messages:ChatMessage[]}>(`/dms/${conversationId}/messages/search?q=${encodeURIComponent(query)}`).then(result=>{if(generation===searchGeneration.current)setSearchMatches(result.messages||[]);}).catch(error=>{if(generation===searchGeneration.current){setSearchMatches([]);toast.show(error.message,'error');}}).finally(()=>{if(generation===searchGeneration.current)setSearchBusy(false);}),250);return()=>window.clearTimeout(timer);},[conversationId,messageSearch,messageSearchOpen]);
+ useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
  if(!conversationId)return <div className="dm-empty-stage"><div className="dm-empty-illustration"><MessageCircle size={34}/><span>R</span></div><p className="dm-empty-eyebrow">RELAY MESSAGES</p><h2>Your conversations, all together.</h2><p className="dm-empty-copy">Pick a chat from the list, message a friend, or bring your group into one place.</p><Link className="btn primary" to="/friends"><MessageSquarePlus size={16}/> Start a conversation</Link></div>;
- const visibleMessages=messageSearch.trim()?chat.messages.filter(message=>message.content.toLowerCase().includes(messageSearch.toLowerCase())):chat.messages;
+ const query=messageSearch.trim();const visibleMessages=query.length>=2?(searchMatches||[]):query?chat.messages.filter(message=>message.content.toLowerCase().includes(query.toLowerCase())):chat.messages;
  return <div className="chat-page dm-chat-page"><div className="chat-heading dm-chat-heading"><div className="dm-title-line">{others.length===1?<Avatar name={others[0].username} src={others[0].avatar} size="lg" presence={others[0].presence}/>:<span className="dm-group-avatar"><UsersRound size={21}/></span>}<div className="dm-heading-copy"><h2>{title}</h2><p>{dm?.is_group?'Group · '+(dm?.members?.length||0)+' members':others[0]?.status_text||others[0]?.presence||'Direct message'}</p></div></div><div className="chat-head-actions"><button className={`icon-btn ${messageSearchOpen?'active':''}`} onClick={()=>{setMessageSearchOpen(v=>!v);setMessageSearch('');}} title="Search this chat"><Search size={18}/></button><button className={`icon-btn ${membersOpen?'active':''}`} onClick={()=>setMembersOpen(v=>!v)} title="Conversation members"><Users size={18}/></button></div></div>
  {messageSearchOpen&&<div className="dm-search-inline"><Search size={15}/><input autoFocus value={messageSearch} onChange={e=>setMessageSearch(e.target.value)} placeholder="Search messages in this chat"/><span>{visibleMessages.length} matches</span><button onClick={()=>{setMessageSearchOpen(false);setMessageSearch('');}} aria-label="Close search"><X size={15}/></button></div>}
- <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={visibleMessages} loading={chat.loading} hasOlder={!messageSearch&&chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">IN THIS CHAT · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+ <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={visibleMessages} loading={chat.loading||searchBusy} hasOlder={!messageSearch&&chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">IN THIS CHAT · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
  {chat.typing&&<div className="typing-note">{chat.typing}</div>}
  <ChatComposer conversationId={conversationId} isDm socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
  {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}

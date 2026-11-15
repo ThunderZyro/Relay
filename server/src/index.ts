@@ -562,9 +562,11 @@ function canAccessDm(dmId: string,userId: string) {
   return peers.length===1 && peers.every(peer=>canMessageDmPeer(userId,peer.user_id));
 }
 function dmSummary(dmId: string,userId: string) {
-  const row=db.prepare(`SELECT d.*, (SELECT content FROM messages m WHERE m.dm_id=d.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
-    (SELECT created_at FROM messages m WHERE m.dm_id=d.id ORDER BY m.created_at DESC LIMIT 1) AS last_message_at
-    FROM dms d JOIN dm_members me ON me.dm_id=d.id WHERE d.id=? AND me.user_id=?`).get(dmId,userId) as any;
+  const row=db.prepare(`SELECT d.*, (SELECT content FROM messages m WHERE m.dm_id=d.id AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message,
+    (SELECT created_at FROM messages m WHERE m.dm_id=d.id AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message_at,
+    (SELECT COUNT(*) FROM messages unread WHERE unread.dm_id=d.id AND unread.sender_id<>? AND unread.deleted_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=unread.id AND mr.user_id=?)) AS unread_count
+    FROM dms d JOIN dm_members me ON me.dm_id=d.id WHERE d.id=? AND me.user_id=?`).get(userId,userId,dmId,userId) as any;
   if(!row)return null;
   if(!canAccessDm(dmId,userId))return null;
   const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
@@ -634,9 +636,21 @@ app.get('/api/servers', requireAuth, (req: AuthedRequest,res) => {
 });
 app.get('/api/discover', requireAuth, (req: AuthedRequest,res) => {
   const q=String(req.query.q||'').slice(0,60);
-  const servers=db.prepare(`SELECT s.id,s.name,s.description,s.icon,s.created_at,(SELECT COUNT(*) FROM memberships m WHERE m.server_id=s.id) member_count
-    FROM servers s WHERE s.is_discoverable=1 AND (s.name LIKE ? OR s.description LIKE ?) ORDER BY member_count DESC LIMIT 40`).all(`%${q}%`,`%${q}%`);
+  const sort=String(req.query.sort||'popular');
+  const orderBy=sort==='newest'?'CAST(s.created_at AS timestamptz) DESC':sort==='active'?"COALESCE((SELECT MAX(CAST(msg.created_at AS timestamptz)) FROM messages msg JOIN channels ch ON ch.id=msg.channel_id WHERE ch.server_id=s.id),CAST(s.created_at AS timestamptz)) DESC":'member_count DESC, CAST(s.created_at AS timestamptz) DESC';
+  const servers=db.prepare(`SELECT s.id,s.name,s.description,s.icon,s.created_at,
+      (SELECT COUNT(*) FROM memberships m WHERE m.server_id=s.id) member_count,
+      COALESCE((SELECT MAX(CAST(msg.created_at AS timestamptz)) FROM messages msg JOIN channels ch ON ch.id=msg.channel_id WHERE ch.server_id=s.id),CAST(s.created_at AS timestamptz)) last_active_at
+    FROM servers s WHERE s.is_discoverable=1 AND (s.name ILIKE ? OR s.description ILIKE ?) ORDER BY ${orderBy} LIMIT 40`).all(`%${q}%`,`%${q}%`);
   res.json({servers});
+});
+app.get('/api/discover/:serverId', requireAuth, (req:AuthedRequest,res) => {
+  const preview=db.prepare(`SELECT s.id,s.name,s.description,s.icon,s.created_at,
+    (SELECT COUNT(*) FROM memberships m WHERE m.server_id=s.id) member_count,
+    (SELECT COUNT(*) FROM channels c WHERE c.server_id=s.id AND c.type<>'voice') channel_count
+    FROM servers s WHERE s.id=? AND s.is_discoverable=1`).get(req.params.serverId) as any;
+  if(!preview)return fail(res,404,'Public community not found.');
+  res.json({community:preview});
 });
 app.post('/api/servers', requireAuth, (req: AuthedRequest,res) => {
   const parsed=z.object({name:z.string().trim().min(2).max(80),description:z.string().max(300).optional()}).safeParse(req.body);
@@ -857,13 +871,31 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 function messageRows(whereSql:string, params:any[], limit=60) {
   return db.prepare(`SELECT m.*,u.username,u.avatar,
     (SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions,
-    (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments
+    (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments,
+    (SELECT COALESCE(json_agg(json_build_object('user_id',mr.user_id,'username',reader.username,'read_at',mr.read_at))::text,'[]')
+      FROM message_reads mr JOIN users reader ON reader.id=mr.user_id WHERE mr.message_id=m.id) read_by
     FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC,m.id DESC LIMIT ?`)
     .all(...params,limit).reverse().map((m:any)=>({
       ...m,
       reactions:JSON.parse(m.reactions||'[]'),
-      attachments:JSON.parse(m.attachments||'[]')
+      attachments:JSON.parse(m.attachments||'[]'),
+      read_by:JSON.parse(m.read_by||'[]')
     }));
+}
+function markMessagesRead(messages:any[], userId:string, room:string, username:string) {
+  const unread=messages.filter(message=>message.sender_id!==userId && !(message.read_by||[]).some((reader:any)=>reader.user_id===userId));
+  if(!unread.length)return;
+  const readAt=now();
+  db.transaction(()=>{
+    const insert=db.prepare('INSERT INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?) ON CONFLICT(message_id,user_id) DO NOTHING');
+    unread.forEach(message=>insert.run(message.id,userId,readAt));
+  })();
+  io.to(room).emit('message:read',{userId,username,messageIds:unread.map(message=>message.id),readAt});
+}
+function sharedAttachments(whereSql:string,params:any[]) {
+  return db.prepare(`SELECT a.id,a.filename,a.mime,a.size,m.created_at,u.username
+    FROM attachments a JOIN messages m ON m.id=a.message_id JOIN users u ON u.id=m.sender_id
+    WHERE ${whereSql} AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 100`).all(...params);
 }
 // Message history cursor logic lives in message-history.ts and has focused tests.
 
@@ -872,13 +904,25 @@ app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,re
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.channel_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.channel_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.channelId, ...cursor.params] : [req.params.channelId];
+  const messages=messageRows(where,params);
+  markMessagesRead(messages,req.user!.id,`channel:${req.params.channelId}`,req.user!.username);
   res.json({messages:messageRows(where,params)});
+});
+app.get('/api/channels/:channelId/attachments', requireAuth, (req:AuthedRequest,res) => {
+  if(!canReadChannel(req.params.channelId,req.user!.id))return fail(res,403,'Channel membership required.');
+  res.json({attachments:sharedAttachments('m.channel_id=?',[req.params.channelId])});
+});
+app.get('/api/dms/:dmId/attachments', requireAuth, (req:AuthedRequest,res) => {
+  if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
+  res.json({attachments:sharedAttachments('m.dm_id=?',[req.params.dmId])});
 });
 app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
+  const messages=messageRows(where,params);
+  markMessagesRead(messages,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
   res.json({messages:messageRows(where,params)});
 });
 app.get('/api/dms/:dmId/messages/search', requireAuth, (req: AuthedRequest,res) => {

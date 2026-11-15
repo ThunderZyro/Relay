@@ -111,7 +111,8 @@ const migrations = [
   { version: 4, name: 'password reset tokens', file: '004_password_reset_tokens.sql' },
   { version: 5, name: 'attachment and message query indexes', file: '005_attachment_query_indexes.sql' },
   { version: 6, name: 'distributed Socket.IO attachments', file: '006_socket_io_adapter.sql' },
-  { version: 7, name: 'distributed API rate limits', file: '007_api_rate_limits.sql' }
+  { version: 7, name: 'distributed API rate limits', file: '007_api_rate_limits.sql' },
+  { version: 8, name: 'message read receipts', file: '008_message_reads.sql' }
 ];
 const applyMigrations = db.transaction(() => {
   db.prepare('SELECT pg_advisory_xact_lock(71324001)').get();

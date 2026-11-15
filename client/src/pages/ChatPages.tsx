@@ -97,7 +97,7 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
 
  const load=async(generation=requestGeneration.current)=>{
   if(!id){
-   if(generation===requestGeneration.current){setMessages([]);setHasOlder(false);setLoading(false);}
+   if(generation===requestGeneration.current){setMessages([]);setHasOlder(false);setLoadingOlder(false);setLoading(false);}
    return;
   }
   setMessages([]);
@@ -236,7 +236,23 @@ function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:bo
 
 export function ChannelPage(){
  const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);
- useEffect(()=>{if(!serverId)return;api<RoomServer>(`/servers/${serverId}`).then(r=>{setRoom(r);const target=channelId||r.channels.find(c=>c.type!=='voice')?.id||r.channels[0]?.id;if(target){setSelected(target);if(!channelId)navigate(`/channels/${serverId}/${target}`,{replace:true});}}).catch(e=>toast.show(e.message,'error'));},[serverId]);
+ useEffect(()=>{
+  let active=true;
+  if(!serverId){setRoom(null);return()=>{active=false;};}
+  setRoom(null);
+  api<RoomServer>(`/servers/${serverId}`)
+   .then(r=>{
+    if(!active)return;
+    setRoom(r);
+    const target=channelId||r.channels.find(c=>c.type!=='voice')?.id||r.channels[0]?.id;
+    if(target){
+     setSelected(target);
+     if(!channelId)navigate(`/channels/${serverId}/${target}`,{replace:true});
+    }
+   })
+   .catch(e=>{if(active)toast.show(e.message,'error');});
+  return()=>{active=false;};
+ },[serverId,navigate]);
  useEffect(()=>{setSelected(channelId);setReply(null);},[channelId]);
  const channel=room?.channels.find(c=>c.id===selected);const chat=useRoomMessages(channel?.id,false);
  const typing=chat.typing;

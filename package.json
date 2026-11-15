@@ -12,7 +12,8 @@
     "build:client": "npm run build --workspace=@relay/client",
     "build:server": "npm run build --workspace=@relay/server",
     "start": "node server/dist/index.js",
-    "db:seed": "npm run seed --workspace=@relay/server"
+    "db:seed": "npm run seed --workspace=@relay/server",
+    "test": "npm run test --workspace=@relay/server"
   },
   "engines": {
     "node": ">=22.0.0",

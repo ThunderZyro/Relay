@@ -1,16 +1,28 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
-import { ArrowLeft, Bell, Check, FilePlus2, Hash, MessageCircle, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, Bell, Camera, Check, FilePlus2, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
 import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
 
-type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[] };
+type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; read_by?:{user_id:string;username:string;read_at:string}[]; channel_id?:string|null; dm_id?:string|null };
+
+function compareMessages(a: ChatMessage, b: ChatMessage) {
+ const timeDifference = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+ return timeDifference || a.id.localeCompare(b.id);
+}
+
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+ 'image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain',
+ 'application/zip','audio/mpeg','audio/ogg','video/mp4'
+]);
+const BLOCKED_ATTACHMENT_EXTENSIONS = new Set(['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1']);
 type RoomServer = { server:{id:string;name:string;description?:string}; channels:any[]; members:any[]; categories:any[] };
 
-function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=false, onLoadOlder, currentUserId, onReply, onEdit, onMore, onReact }: {
- messages:ChatMessage[]; loading?:boolean; hasOlder?:boolean; loadingOlder?:boolean; onLoadOlder?:()=>void; currentUserId?:string; onReply:(m:ChatMessage)=>void; onEdit:(m:ChatMessage)=>void; onMore:(m:ChatMessage)=>void; onReact:(m:ChatMessage,emoji:string)=>void;
+function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=false, onLoadOlder, currentUserId, onReply, onEdit, onMore, onReact, isDm=false }: {
+ messages:ChatMessage[]; loading?:boolean; hasOlder?:boolean; loadingOlder?:boolean; onLoadOlder?:()=>void; currentUserId?:string; onReply:(m:ChatMessage)=>void; onEdit:(m:ChatMessage)=>void; onMore:(m:ChatMessage)=>void; onReact:(m:ChatMessage,emoji:string)=>void; isDm?:boolean;
 }) {
  const bottomRef=useRef<HTMLDivElement>(null);
  useEffect(()=>{bottomRef.current?.scrollIntoView({block:'end',behavior:'auto'});},[messages[messages.length-1]?.id,loading]);
@@ -24,7 +36,8 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
     {!grouped&&<div className="message-meta"><b>{m.username}</b><time>{new Date(m.created_at).toLocaleString()}</time>{m.edited_at&&<small>(edited)</small>}{m.pinned? <span className="pinned-mark"><Pin size={10}/> Pinned</span>:null}</div>}
     {m.reply_to&&<div className="reply-quote"><Reply size={11}/> Reply</div>}
     <p className="message-content">{m.content}</p><time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
-    {m.attachments?.map(a=><a className="attachment" key={a.id} href={`${apiOrigin}/api/uploads/${a.id}`} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>)}
+    {own&&isDm&&!!m.read_by?.length&&<small className="message-read-status">{m.read_by.length===1?'Seen':`Seen by ${m.read_by.length}`}</small>}
+    {m.attachments?.map(a=>{const url=`${apiOrigin}/api/uploads/${a.id}`;return a.mime.startsWith('image/')?<a className="attachment-preview" key={a.id} href={url} target="_blank" rel="noreferrer"><img src={url} alt={a.filename} loading="lazy"/><small>{a.filename}</small></a>:a.mime==='video/mp4'?<div className="attachment-preview" key={a.id}><video src={url} controls preload="metadata"/><small>{a.filename}</small></div>:a.mime.startsWith('audio/')?<div className="attachment-audio" key={a.id}><audio src={url} controls preload="metadata"/><small>{a.filename}</small></div>:<a className="attachment" key={a.id} href={url} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>;})}
     {!!m.reactions?.length&&<div className="reactions">{m.reactions.map((r,i)=><button key={`${r.emoji}-${i}`} onClick={()=>onReact(m,r.emoji)}>{r.emoji}</button>)}</div>}
    </div>
    <div className="message-tools">
@@ -37,8 +50,14 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
  })}<div ref={bottomRef}/></div>;
 }
 
+function SharedMediaPanel({items,loading,onClose}:{items:any[];loading:boolean;onClose:()=>void}){
+ return <aside className="member-panel shared-media-panel"><div className="shared-media-heading"><div><b>Shared media</b><small>Latest 100 attachments</small></div><button className="icon-btn" onClick={onClose} aria-label="Close shared media">×</button></div>{loading?<Loading label="Loading shared files…"/>:items.length?<div className="shared-media-grid">{items.map(item=>{const url=`${apiOrigin}/api/uploads/${item.id}`;return <a key={item.id} className="shared-media-item" href={url} target="_blank" rel="noreferrer">{String(item.mime).startsWith('image/')?<img src={url} alt={item.filename} loading="lazy"/>:item.mime==='video/mp4'?<video src={url} muted preload="metadata"/>:<span className="shared-file-icon"><FilePlus2 size={22}/></span>}<b>{item.filename}</b><small>{item.username} · {new Date(item.created_at).toLocaleDateString()}</small></a>;})}</div>:<div className="mini-empty">No files have been shared here yet.</div>}</aside>;
+}
+
 function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply }: { conversationId:string; isDm:boolean; socket:Socket|null; onSent:(m:ChatMessage)=>void; reply:ChatMessage|null; clearReply:()=>void }) {
- const [content,setContent]=useState('');const [busy,setBusy]=useState(false);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
+ const {user}=useAuth();const draftKey=`relay:draft:${user?.id||'guest'}:${isDm?'dm':'channel'}:${conversationId}`;
+ const [content,setContent]=useState(()=>{try{return window.localStorage.getItem(draftKey)||'';}catch{return '';}});const [busy,setBusy]=useState(false);
+ useEffect(()=>{try{if(content)window.localStorage.setItem(draftKey,content);else window.localStorage.removeItem(draftKey);}catch{/* Draft saving is best effort when browser storage is restricted. */}},[content,draftKey]);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
  const send=async(e?:React.FormEvent)=>{e?.preventDefault();socket?.emit('typing:stop',typingTarget);if((!content.trim()&&!files.length)||busy)return;setBusy(true);try{
   let uploadIds:string[]=[];
   if(files.length){const form=new FormData();files.forEach(f=>form.append('files',f));const uploaded=await post<{uploads:{id:string}[]}>('/uploads',form);uploadIds=uploaded.uploads.map(u=>u.id);}
@@ -49,7 +68,21 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
   {reply&&<div className="reply-banner"><Reply size={13}/> Replying to {reply.username}: {reply.content.slice(0,90)}<button onClick={clearReply} aria-label="Cancel reply"><X size={13}/></button></div>}
   {files.length>0&&<div className="file-chips">{files.map((f,i)=><span key={`${f.name}-${i}`}>{f.name}<button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}><X size={12}/></button></span>)}</div>}
   <form className="composer" onSubmit={send}>
-   <input ref={fileRef} type="file" multiple hidden onChange={e=>{setFiles(v=>[...v,...Array.from(e.target.files||[])].slice(0,8));e.currentTarget.value='';}}/>
+   <input ref={fileRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,application/zip,audio/mpeg,audio/ogg,video/mp4" onChange={e=>{
+    const incoming = Array.from(e.currentTarget.files || []);
+    const accepted = incoming.filter(file => {
+     const dot = file.name.lastIndexOf('.');
+     const extension = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
+     return file.size <= MAX_UPLOAD_BYTES && ALLOWED_ATTACHMENT_TYPES.has(file.type) && !BLOCKED_ATTACHMENT_EXTENSIONS.has(extension);
+    });
+    const rejectedCount = incoming.length - accepted.length;
+    const remainingSlots = Math.max(0, 8 - files.length);
+    const added = accepted.slice(0, remainingSlots);
+    if (rejectedCount) toast.show('Some files were skipped. Use supported file types up to 10 MB each.','error');
+    if (added.length < accepted.length) toast.show('A message can contain up to 8 files.','info');
+    setFiles(current => [...current, ...added]);
+    e.currentTarget.value = '';
+   }}/>
    <button className="composer-icon" type="button" title="Attach file" onClick={()=>fileRef.current?.click()}><Paperclip size={18}/></button>
    <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message…" maxLength={4000}/>
    <button className="composer-send" type="submit" disabled={busy||(!content.trim()&&!files.length)} title="Send"><Send size={16}/></button>
@@ -58,17 +91,171 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
 }
 
 function useRoomMessages(id:string|undefined,isDm:boolean){
- const [messages,setMessages]=useState<ChatMessage[]>([]);const [loading,setLoading]=useState(true);const [hasOlder,setHasOlder]=useState(false);const [loadingOlder,setLoadingOlder]=useState(false);const [socket,setSocket]=useState<Socket|null>(null);const [typing,setTyping]=useState('');const toast=useToast();const typingTimer=useRef<number|undefined>(undefined);
- const route=isDm?`/dms/${id}/messages`:`/channels/${id}/messages`;
- const load=async()=>{if(!id){setMessages([]);setLoading(false);return;}setLoading(true);try{const r=await api<{messages:ChatMessage[]}>(route);setMessages(r.messages||[]);setHasOlder((r.messages||[]).length===60);}catch(e:any){toast.show(e.message,'error');setMessages([]);}finally{setLoading(false);}};
- const refreshLatest=async()=>{if(!id)return;try{const r=await api<{messages:ChatMessage[]}>(route);const latest=r.messages||[];const latestIds=new Set(latest.map(message=>message.id));const oldestLatest=latest.length?new Date(latest[0].created_at).getTime():0;setMessages(current=>{const merged=new Map(current.map(message=>[message.id,message]));for(const message of latest)merged.set(message.id,message);if(latest.length<60)return latest;for(const message of current){if(new Date(message.created_at).getTime()>=oldestLatest&&!latestIds.has(message.id))merged.delete(message.id);}return [...merged.values()].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime());});if(latest.length===60)setHasOlder(true);}catch{/* Socket reconnect/polling is best-effort; the next cycle retries. */}};
- useEffect(()=>{void load();},[id,isDm]);
- useEffect(()=>{if(!id){setSocket(null);return;}const live:Socket=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});setSocket(live);const event=isDm?'room:join-dm':'room:join-channel';live.on('connect',()=>{live.emit(event,id);void refreshLatest();});live.on('message:new',(m:ChatMessage)=>setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime())));live.on('message:updated',(m:ChatMessage)=>setMessages(v=>v.map(x=>x.id===m.id?m:x)));live.on('message:deleted',(m:{id:string})=>setMessages(v=>v.filter(x=>x.id!==m.id)));live.on('message:reactions',(r:{messageId:string;reactions:ChatMessage['reactions']})=>setMessages(v=>v.map(x=>x.id===r.messageId?{...x,reactions:r.reactions}:x)));live.on('typing',(t:any)=>{if(typingTimer.current)window.clearTimeout(typingTimer.current);setTyping(t.active?`${t.username} is typing…`: '');if(t.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);});const syncTimer=window.setInterval(()=>void refreshLatest(),15000);return()=>{window.clearInterval(syncTimer);live.disconnect();if(typingTimer.current)window.clearTimeout(typingTimer.current);setSocket(current=>current===live?null:current);setTyping('');};},[id,isDm]);
- const loadOlder=async()=>{if(!id||!hasOlder||loadingOlder||!messages.length)return;setLoadingOlder(true);try{const route=isDm?'/dms/'+id+'/messages':'/channels/'+id+'/messages';const older=(await api<{messages:ChatMessage[]}>(route+'?before='+encodeURIComponent(messages[0].created_at))).messages||[];setMessages(current=>[...older.filter(m=>!current.some(existing=>existing.id===m.id)),...current]);setHasOlder(older.length===60);}catch(e:any){toast.show(e.message,'error');}finally{setLoadingOlder(false);}};
- const add=(message:ChatMessage)=>setMessages(v=>v.some(m=>m.id===message.id)?v:[...v,message]);
+ const [messages,setMessages]=useState<ChatMessage[]>([]);
+ const [loading,setLoading]=useState(true);
+ const [hasOlder,setHasOlder]=useState(false);
+ const [loadingOlder,setLoadingOlder]=useState(false);
+ const [socket,setSocket]=useState<Socket|null>(null);
+ const [typingUsers,setTypingUsers]=useState<Array<{id:string;username:string}>>([]);
+ const toast=useToast();
+ const typingTimers=useRef<Map<string,number>>(new Map());
+ const requestGeneration=useRef(0);
+ const route=isDm? `/dms/${id}/messages` : `/channels/${id}/messages`;
+
+ const load=async(generation=requestGeneration.current)=>{
+  if(!id){
+   if(generation===requestGeneration.current){setMessages([]);setHasOlder(false);setLoadingOlder(false);setLoading(false);}
+   return;
+  }
+  setMessages([]);
+  setHasOlder(false);
+  setLoadingOlder(false);
+  setLoading(true);
+  try{
+   const response=await api<{messages:ChatMessage[]}>(route);
+   if(generation!==requestGeneration.current)return;
+   const next=response.messages||[];
+   setMessages([...next].sort(compareMessages));
+   setHasOlder(next.length===60);
+  }catch(error:any){
+   if(generation!==requestGeneration.current)return;
+   toast.show(error.message,'error');
+   setMessages([]);
+  }finally{
+   if(generation===requestGeneration.current)setLoading(false);
+  }
+ };
+
+ const refreshLatest=async()=>{
+  if(!id)return;
+  const generation=requestGeneration.current;
+  try{
+   const response=await api<{messages:ChatMessage[]}>(route);
+   if(generation!==requestGeneration.current)return;
+   const latest=response.messages||[];
+   const latestIds=new Set(latest.map(message=>message.id));
+   const oldestLatest=latest[0];
+   setMessages(current=>{
+    const merged=new Map(current.map(message=>[message.id,message]));
+    for(const message of latest)merged.set(message.id,message);
+    if(latest.length<60)return [...latest].sort(compareMessages);
+    if(oldestLatest){
+     for(const message of current){
+      if(compareMessages(message,oldestLatest)>=0&&!latestIds.has(message.id))merged.delete(message.id);
+     }
+    }
+    return [...merged.values()].sort(compareMessages);
+   });
+   if(latest.length===60)setHasOlder(true);
+  }catch{
+   // Realtime polling is best-effort; a later cycle retries.
+  }
+ };
+
+ useEffect(()=>{
+  const generation=++requestGeneration.current;
+  void load(generation);
+  return()=>{
+   if(requestGeneration.current===generation)requestGeneration.current+=1;
+  };
+ },[id,isDm]);
+
+ useEffect(()=>{
+  if(!id){setSocket(null);return;}
+  const generation=requestGeneration.current;
+  const isCurrentRoom=()=>generation===requestGeneration.current;
+  const live:Socket=io(apiOrigin,{
+   withCredentials:true,
+   transports:['websocket'],
+   reconnection:true,
+   reconnectionDelay:500,
+   reconnectionDelayMax:5000
+  });
+  let plannedRotation=false;let rotationTimer:number|undefined;
+  live.on('relay:rotate',()=>{plannedRotation=true;});
+  live.on('disconnect',()=>{if(plannedRotation){plannedRotation=false;rotationTimer=window.setTimeout(()=>{if(isCurrentRoom())live.connect();},250);}});
+  setSocket(live);
+  const joinEvent=isDm?'room:join-dm':'room:join-channel';
+  live.on('connect',()=>{
+   if(!isCurrentRoom())return;
+   live.emit(joinEvent,id);
+   void refreshLatest();
+  });
+  live.on('friends:updated',()=>{
+   if(!isCurrentRoom())return;
+   if(isDm)live.emit(joinEvent,id);
+   void refreshLatest();
+  });
+  live.on('message:new',(message:ChatMessage)=>{
+   if(!isCurrentRoom())return;
+   setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));
+  });
+  live.on('message:read',(event:{userId:string;username:string;messageIds:string[];readAt:string})=>{
+   if(!isCurrentRoom()||!Array.isArray(event?.messageIds))return;
+   const readIds=new Set(event.messageIds);
+   setMessages(current=>current.map(message=>readIds.has(message.id)?{...message,read_by:[...(message.read_by||[]).filter(reader=>reader.user_id!==event.userId),{user_id:event.userId,username:event.username,read_at:event.readAt}]}:message));
+  });
+  live.on('message:updated',(message:ChatMessage)=>{
+   if(isCurrentRoom())setMessages(current=>current.map(item=>item.id===message.id?message:item).sort(compareMessages));
+  });
+  live.on('message:deleted',(message:{id:string})=>{
+   if(isCurrentRoom())setMessages(current=>current.filter(item=>item.id!==message.id));
+  });
+  live.on('message:reactions',(update:{messageId:string;reactions:ChatMessage['reactions']})=>{
+   if(isCurrentRoom())setMessages(current=>current.map(item=>item.id===update.messageId?{...item,reactions:update.reactions}:item));
+  });
+  const removeTypingUser=(userId:string)=>{
+   const timer=typingTimers.current.get(userId);if(timer)window.clearTimeout(timer);
+   typingTimers.current.delete(userId);
+   setTypingUsers(current=>current.filter(item=>item.id!==userId));
+  };
+  live.on('typing',(event:any)=>{
+   if(!isCurrentRoom())return;
+   const userId=String(event?.userId||'');if(!userId)return;
+   removeTypingUser(userId);
+   if(!event.active)return;
+   const username=String(event.username||'Someone');
+   setTypingUsers(current=>[...current.filter(item=>item.id!==userId),{id:userId,username}]);
+   const timer=window.setTimeout(()=>{if(typingTimers.current.get(userId)===timer){typingTimers.current.delete(userId);setTypingUsers(current=>current.filter(item=>item.id!==userId));}},5000);
+   typingTimers.current.set(userId,timer);
+  });
+  const syncTimer=window.setInterval(()=>{if(isCurrentRoom())void refreshLatest();},15000);
+  return()=>{
+   window.clearInterval(syncTimer);
+   if(rotationTimer)window.clearTimeout(rotationTimer);
+   live.disconnect();
+   for(const timer of typingTimers.current.values())window.clearTimeout(timer);
+   typingTimers.current.clear();
+   setSocket(current=>current===live?null:current);
+   setTypingUsers([]);
+  };
+ },[id,isDm]);
+
+ const loadOlder=async()=>{
+  if(!id||!hasOlder||loadingOlder||!messages.length)return;
+  const generation=requestGeneration.current;
+  const oldest=messages[0];
+  setLoadingOlder(true);
+  try{
+   const cursor=`?before=${encodeURIComponent(oldest.created_at)}&beforeId=${encodeURIComponent(oldest.id)}`;
+   const older=(await api<{messages:ChatMessage[]}>(route+cursor)).messages||[];
+   if(generation!==requestGeneration.current)return;
+   setMessages(current=>[...older.filter(message=>!current.some(existing=>existing.id===message.id)),...current].sort(compareMessages));
+   setHasOlder(older.length===60);
+  }catch(error:any){
+   if(generation===requestGeneration.current)toast.show(error.message,'error');
+  }finally{
+   if(generation===requestGeneration.current)setLoadingOlder(false);
+  }
+ };
+ const add=(message:ChatMessage)=>{
+  const belongsToRoom=isDm?message.dm_id===id:message.channel_id===id;
+  if(!belongsToRoom)return;
+  setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));
+ };
+ const typing=typingUsers.length?`${typingUsers.map(item=>item.username).join(', ')} ${typingUsers.length===1?'is':'are'} typing…`:'';
  return {messages,setMessages,loading,hasOlder,loadingOlder,loadOlder,typing,socket,add,reload:load};
 }
-
 function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
  const toast=useToast();const {user}=useAuth();
  return <Modal title="Message actions" onClose={onClose}><div className="form-stack">
@@ -80,21 +267,39 @@ function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:bo
 }
 
 export function ChannelPage(){
- const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);
- useEffect(()=>{if(!serverId)return;api<RoomServer>(`/servers/${serverId}`).then(r=>{setRoom(r);const target=channelId||r.channels.find(c=>c.type!=='voice')?.id||r.channels[0]?.id;if(target){setSelected(target);if(!channelId)navigate(`/channels/${serverId}/${target}`,{replace:true});}}).catch(e=>toast.show(e.message,'error'));},[serverId]);
+ const {serverId,channelId}=useParams();const navigate=useNavigate();const {user}=useAuth();const toast=useToast();const [room,setRoom]=useState<RoomServer|null>(null);const [selected,setSelected]=useState<string|undefined>(channelId);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [sharedOpen,setSharedOpen]=useState(false);const [sharedItems,setSharedItems]=useState<any[]>([]);const [sharedLoading,setSharedLoading]=useState(false);
+ useEffect(()=>{
+  let active=true;
+  if(!serverId){setRoom(null);return()=>{active=false;};}
+  setRoom(null);
+  api<RoomServer>(`/servers/${serverId}`)
+   .then(r=>{
+    if(!active)return;
+    setRoom(r);
+    const target=channelId||r.channels.find(c=>c.type!=='voice')?.id||r.channels[0]?.id;
+    if(target){
+     setSelected(target);
+     if(!channelId)navigate(`/channels/${serverId}/${target}`,{replace:true});
+    }
+   })
+   .catch(e=>{if(active)toast.show(e.message,'error');});
+  return()=>{active=false;};
+ },[serverId,navigate]);
  useEffect(()=>{setSelected(channelId);setReply(null);},[channelId]);
  const channel=room?.channels.find(c=>c.id===selected);const chat=useRoomMessages(channel?.id,false);
+ const loadShared=async()=>{if(!channel?.id)return;setSharedOpen(true);setMembersOpen(false);setSharedLoading(true);try{const result=await api<any>(`/channels/${channel.id}/attachments`);setSharedItems(result.attachments||[]);}catch(error:any){toast.show(error.message,'error');}finally{setSharedLoading(false);}};
  const typing=chat.typing;
+ useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
  if(!serverId)return <Loading/>;if(!room)return <Loading label="Loading server"/>;
  if(!channel)return <div className="page-content"><EmptyState title="No channel selected" description="Create a channel in server settings or choose another server." action={<Link to={`/server/${serverId}/settings/overview`}>Server settings</Link>}/></div>;
- if(channel.type==='voice')return <div className="page-content voice-page"><div className="voice-card"><Volume2 size={32}/><h1>{channel.name}</h1><p>Voice uses peer-to-peer audio, with optional TURN relay support when configured by the server.</p><VoiceJoin channelId={channel.id}/><div className="voice-controls"><Button variant="secondary" onClick={()=>setMembersOpen(v=>!v)}><Users size={15}/> {room.members.length} members</Button><Button variant="secondary" onClick={()=>navigate(`/server/${serverId}/settings/overview`)}>Channel settings</Button></div>{membersOpen&&<div className="voice-member-list">{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name||'Member'}</small></div>)}</div>}</div></div>;
+ if(channel.type==='voice')return <div className="page-content voice-page"><div className="voice-card"><Volume2 size={32}/><h1>{channel.name}</h1><p>Talk with your community, turn on your camera, or share your screen. Some networks require TURN relay support.</p><VoiceJoin channelId={channel.id}/><div className="voice-controls"><Button variant="secondary" onClick={()=>setMembersOpen(v=>!v)}><Users size={15}/> {room.members.length} members</Button><Button variant="secondary" onClick={()=>navigate(`/server/${serverId}/settings/overview`)}>Channel settings</Button></div>{membersOpen&&<div className="voice-member-list">{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span><small>{m.role_name||'Member'}</small></div>)}</div>}</div></div>;
  return <div className="chat-page">
-  <div className="chat-heading"><div><h2><span>#</span>{channel.name}</h2><p>{channel.topic||room.server.description||'Conversation starts here.'}</p></div><div className="chat-head-actions"><button className="icon-btn" onClick={()=>setMembersOpen(v=>!v)} title="Toggle members"><Users size={17}/></button><Link className="icon-btn" to={`/server/${serverId}/settings/overview`} title="Server settings"><MoreHorizontal size={18}/></Link></div></div>
-  <div className="chat-main"><div className="chat-scroll"><MessageList messages={chat.messages} loading={chat.loading} hasOlder={chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>
-  {membersOpen&&<aside className="member-panel"><div className="section-label">MEMBERS · {room.members.length}</div>{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+  <div className="chat-heading"><div><h2><span>#</span>{channel.name}</h2><p>{channel.topic||room.server.description||'Conversation starts here.'}</p></div><div className="chat-head-actions"><button className={`icon-btn ${sharedOpen?'active':''}`} onClick={()=>void loadShared()} title="Shared media"><Images size={17}/></button><button className="icon-btn" onClick={()=>{setSharedOpen(false);setMembersOpen(v=>!v);}} title="Toggle members"><Users size={17}/></button><Link className="icon-btn" to={`/server/${serverId}/settings/overview`} title="Server settings"><MoreHorizontal size={18}/></Link></div></div>
+  <div className="chat-main"><div className="chat-scroll"><MessageList messages={chat.messages} isDm={false} loading={chat.loading} hasOlder={chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>
+  {membersOpen&&<aside className="member-panel"><div className="section-label">MEMBERS · {room.members.length}</div>{room.members.map(m=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}{sharedOpen&&<SharedMediaPanel items={sharedItems} loading={sharedLoading} onClose={()=>setSharedOpen(false)}/>}</div>
   {typing&&<div className="typing-note">{typing}</div>}
-  <ChatComposer conversationId={channel.id} isDm={false} socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
+  <ChatComposer key={channel.id} conversationId={channel.id} isDm={false} socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
   {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}
   {actionMessage&&<MessageActions message={actionMessage} isDm={false} onClose={()=>setActionMessage(null)}/>}
  </div>;
@@ -102,14 +307,15 @@ export function ChannelPage(){
 
 type VoiceSignal = {type:'offer'|'answer';sdp:RTCSessionDescriptionInit}|{type:'candidate';candidate:RTCIceCandidateInit};
 function VoiceJoin({channelId}:{channelId:string}){
- const [joined,setJoined]=useState(false);const [joining,setJoining]=useState(false);const [muted,setMuted]=useState(false);const [deafened,setDeafened]=useState(false);const [peers,setPeers]=useState<any[]>([]);const [remoteStreams,setRemoteStreams]=useState<Record<string,MediaStream>>({});const toast=useToast();
- const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());
+ const [joined,setJoined]=useState(false);const [joining,setJoining]=useState(false);const [muted,setMuted]=useState(false);const [deafened,setDeafened]=useState(false);const [cameraOn,setCameraOn]=useState(false);const [sharingScreen,setSharingScreen]=useState(false);const [peers,setPeers]=useState<any[]>([]);const [remoteStreams,setRemoteStreams]=useState<Record<string,MediaStream>>({});const [localVideo,setLocalVideo]=useState<MediaStream|null>(null);const toast=useToast();
+ const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const cameraTrackRef=useRef<MediaStreamTrack|null>(null);const screenTrackRef=useRef<MediaStreamTrack|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());const rotationReconnectTimerRef=useRef<number|undefined>(undefined);
  const emitSignal=(peerId:string,payload:VoiceSignal)=>socketRef.current?.emit('webrtc:signal',{toSocketId:peerId,payload,channelId});
  const createPeer=async(peerId:string,offerer:boolean):Promise<RTCPeerConnection>=>{
   const existing=connectionsRef.current.get(peerId);if(existing)return existing;
   const stream=localStreamRef.current;if(!stream)throw new Error('Microphone is not available.');
   const ice=await api<{iceServers:RTCIceServer[]}>('/voice/ice-servers').catch(()=>({iceServers:[{urls:'stun:stun.l.google.com:19302'}]}));const pc=new RTCPeerConnection({iceServers:ice.iceServers});connectionsRef.current.set(peerId,pc);
-  stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+  stream.getAudioTracks().forEach(track=>pc.addTrack(track,stream));
+  const activeVideo=screenTrackRef.current||cameraTrackRef.current;if(activeVideo)pc.addTrack(activeVideo,stream);
   pc.onicecandidate=event=>{if(event.candidate)emitSignal(peerId,{type:'candidate',candidate:event.candidate.toJSON()});};
   pc.ontrack=event=>{const remote=event.streams?.[0]||new MediaStream([event.track]);setRemoteStreams(current=>({...current,[peerId]:remote}));};
   pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed'){toast.show('A voice connection failed. This network may require a TURN relay.','error');}};
@@ -128,11 +334,20 @@ function VoiceJoin({channelId}:{channelId:string}){
   const queued=pendingCandidatesRef.current.get(peerId)||[];pendingCandidatesRef.current.delete(peerId);for(const candidate of queued)await pc.addIceCandidate(new RTCIceCandidate(candidate));
   if(payload.type==='offer'){const answer=await pc.createAnswer();await pc.setLocalDescription(answer);if(pc.localDescription)emitSignal(peerId,{type:'answer',sdp:pc.localDescription.toJSON()});}
  };
+ const renegotiate=async(pc:RTCPeerConnection,peerId:string)=>{const offer=await pc.createOffer();await pc.setLocalDescription(offer);if(pc.localDescription)emitSignal(peerId,{type:'offer',sdp:pc.localDescription.toJSON()});};
+ const updateVideoTrack=async(track:MediaStreamTrack|null)=>{const stream=localStreamRef.current;for(const [peerId,pc] of connectionsRef.current){const sender=pc.getSenders().find(item=>item.track?.kind==='video');if(sender){const previous=sender.track;if(track){if(stream&&!stream.getTracks().some(item=>item.id===track.id))stream.addTrack(track);await sender.replaceTrack(track);if(previous&&previous.id!==track.id)stream?.removeTrack(previous);}else{if(previous)stream?.removeTrack(previous);pc.removeTrack(sender);await renegotiate(pc,peerId);}}else if(track){if(stream&&!stream.getTracks().some(item=>item.id===track.id))stream.addTrack(track);pc.addTrack(track,stream||new MediaStream([track]));await renegotiate(pc,peerId);}}};
+ const stopScreenShare=()=>{const track=screenTrackRef.current;if(!track)return;screenTrackRef.current=null;track.onended=null;track.stop();setSharingScreen(false);const restore=cameraTrackRef.current;setLocalVideo(restore?new MediaStream([restore]):null);void updateVideoTrack(restore);};
+ const stopCamera=()=>{const track=cameraTrackRef.current;if(!track)return;cameraTrackRef.current=null;track.onended=null;track.stop();setCameraOn(false);if(!screenTrackRef.current){setLocalVideo(null);void updateVideoTrack(null);}};
+ const startCamera=async()=>{try{if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS and a supported browser.');const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:'user'}});const track=stream.getVideoTracks()[0];if(!track)throw new Error('No camera was found.');cameraTrackRef.current=track;setLocalVideo(new MediaStream([track]));setCameraOn(true);if(!screenTrackRef.current)await updateVideoTrack(track);}catch(error:any){toast.show(error.name==='NotAllowedError'?'Camera permission was denied.':error.message||'Could not start the camera.','error');}};
+ const startScreenShare=async()=>{try{if(!navigator.mediaDevices?.getDisplayMedia)throw new Error('Screen sharing is not supported by this browser.');const stream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:false});const track=stream.getVideoTracks()[0];if(!track)throw new Error('No screen track was returned.');screenTrackRef.current=track;setLocalVideo(new MediaStream([track]));setSharingScreen(true);await updateVideoTrack(track);track.onended=()=>stopScreenShare();}catch(error:any){if(error.name!=='NotAllowedError')toast.show(error.message||'Could not start screen sharing.','error');}};
  const removePeer=(peerId:string)=>{const pc=connectionsRef.current.get(peerId);pc?.close();connectionsRef.current.delete(peerId);pendingCandidatesRef.current.delete(peerId);setRemoteStreams(current=>{const next={...current};delete next[peerId];return next;});setPeers(current=>current.filter(peer=>peer.socketId!==peerId));};
  const leave=()=>{
+  if(rotationReconnectTimerRef.current)window.clearTimeout(rotationReconnectTimerRef.current);rotationReconnectTimerRef.current=undefined;
   socketRef.current?.emit('voice:leave',channelId);socketRef.current?.disconnect();socketRef.current=null;
   for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();
   localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
+  if(screenTrackRef.current){screenTrackRef.current.onended=null;screenTrackRef.current.stop();screenTrackRef.current=null;}if(cameraTrackRef.current){cameraTrackRef.current.onended=null;cameraTrackRef.current.stop();cameraTrackRef.current=null;}
+  setLocalVideo(null);setCameraOn(false);setSharingScreen(false);
   setRemoteStreams({});setPeers([]);setJoined(false);setMuted(false);setDeafened(false);
  };
  const join=async()=>{
@@ -140,7 +355,8 @@ function VoiceJoin({channelId}:{channelId:string}){
   try{
    if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microphone access requires HTTPS or localhost and a supported browser.');
    const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});localStreamRef.current=stream;
-   const live=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});socketRef.current=live;
+   const live=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});socketRef.current=live;let plannedRotation=false;
+   live.on('relay:rotate',()=>{plannedRotation=true;});
    const restoreVoiceRoom=()=>{
     for(const connection of connectionsRef.current.values())connection.close();
     connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);
@@ -151,7 +367,12 @@ function VoiceJoin({channelId}:{channelId:string}){
     });
    };
    live.on('connect',restoreVoiceRoom);
-   live.on('disconnect',()=>{for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);});
+   live.on('disconnect',()=>{
+    for(const connection of connectionsRef.current.values())connection.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();setRemoteStreams({});setPeers([]);setJoined(false);
+    if(plannedRotation){plannedRotation=false;rotationReconnectTimerRef.current=window.setTimeout(()=>{if(socketRef.current===live)live.connect();},250);return;}
+    live.io.reconnection(false);
+    localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
+   });
    live.on('voice:forced-leave',(event:any)=>{if(event?.channelId===channelId){toast.show(event.reason||'Your voice access has ended.','info');leave();}});
    live.on('voice:participant',(participant:any)=>{
     if(participant.state==='left'){removePeer(participant.socketId);return;}
@@ -164,15 +385,15 @@ function VoiceJoin({channelId}:{channelId:string}){
  };
  const setAudioState=(nextMuted:boolean,nextDeafened:boolean)=>{setMuted(nextMuted);setDeafened(nextDeafened);localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!nextMuted;});socketRef.current?.emit('voice:state',{channelId,muted:nextMuted,deafened:nextDeafened});};
  useEffect(()=>{localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!muted;});},[muted]);
- useEffect(()=>()=>{socketRef.current?.disconnect();localStreamRef.current?.getTracks().forEach(track=>track.stop());for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();},[]);
+ useEffect(()=>()=>{if(rotationReconnectTimerRef.current)window.clearTimeout(rotationReconnectTimerRef.current);socketRef.current?.disconnect();localStreamRef.current?.getTracks().forEach(track=>track.stop());if(screenTrackRef.current){screenTrackRef.current.onended=null;screenTrackRef.current.stop();}if(cameraTrackRef.current){cameraTrackRef.current.onended=null;cameraTrackRef.current.stop();}for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();},[]);
  return <div className="voice-join">
   <Button onClick={()=>joined?leave():void join()} disabled={joining}>{joining?'Connecting…':joined?'Leave voice':'Join voice'}</Button>
-  {joined&&<><Button variant="secondary" onClick={()=>setAudioState(!muted,deafened)}>{muted?<VolumeX size={15}/>:<Volume2 size={15}/>} {muted?'Unmute':'Mute'}</Button><Button variant="secondary" onClick={()=>setAudioState(muted,!deafened)}>{deafened?'Enable audio':'Deafen'}</Button><p>{peers.length+1} participant(s) · peer-to-peer audio</p><div className="voice-audio" aria-label="Remote participant audio">{Object.entries(remoteStreams).map(([peerId,stream])=><audio key={peerId} autoPlay playsInline muted={deafened} ref={element=>{if(element&&element.srcObject!==stream){element.srcObject=stream;void element.play().catch(()=>{});}}}/>)}</div></>}
+  {joined&&<><Button variant="secondary" onClick={()=>setAudioState(!muted,deafened)}>{muted?<VolumeX size={15}/>:<Volume2 size={15}/>} {muted?'Unmute':'Mute'}</Button><Button variant="secondary" onClick={()=>setAudioState(muted,!deafened)}>{deafened?'Enable audio':'Deafen'}</Button><Button variant="secondary" onClick={()=>cameraOn?stopCamera():void startCamera()}><Camera size={15}/>{cameraOn?'Stop camera':'Camera'}</Button><Button variant="secondary" onClick={()=>sharingScreen?stopScreenShare():void startScreenShare()}><MonitorUp size={15}/>{sharingScreen?'Stop sharing':'Share screen'}</Button><p>{peers.length+1} participant(s) · live voice</p>{localVideo&&<div className="voice-local-preview"><span>Your preview</span><video autoPlay muted playsInline ref={element=>{if(element&&element.srcObject!==localVideo){element.srcObject=localVideo;void element.play().catch(()=>{});}}}/></div>}<div className="voice-video-grid" aria-label="Voice participants">{Object.entries(remoteStreams).map(([peerId,stream])=><div className="voice-video-tile" key={peerId}><video autoPlay playsInline muted={deafened} ref={element=>{if(element&&element.srcObject!==stream){element.srcObject=stream;void element.play().catch(()=>{});}}}/><span>{peers.find(peer=>peer.socketId===peerId)?.username||'Participant'}</span></div>)}</div></>}
  </div>;
 }
 
 export function DmPage(){
- const {conversationId}=useParams();const {user}=useAuth();const toast=useToast();const navigate=useNavigate();const [conversations,setConversations]=useState<any[]>([]);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [messageSearchOpen,setMessageSearchOpen]=useState(false);const [messageSearch,setMessageSearch]=useState('');
+ const {conversationId}=useParams();const {user}=useAuth();const toast=useToast();const navigate=useNavigate();const [conversations,setConversations]=useState<any[]>([]);const [reply,setReply]=useState<ChatMessage|null>(null);const [edit,setEdit]=useState<ChatMessage|null>(null);const [actionMessage,setActionMessage]=useState<ChatMessage|null>(null);const [membersOpen,setMembersOpen]=useState(false);const [sharedOpen,setSharedOpen]=useState(false);const [sharedItems,setSharedItems]=useState<any[]>([]);const [sharedLoading,setSharedLoading]=useState(false);const [messageSearchOpen,setMessageSearchOpen]=useState(false);const [messageSearch,setMessageSearch]=useState('');
  useEffect(()=>{
   let active=true;
   const refresh=async()=>{
@@ -192,14 +413,18 @@ export function DmPage(){
   return()=>{active=false;window.clearInterval(timer);};
  },[conversationId,navigate,toast]);
  const dm=conversations.find(d=>d.id===conversationId);const others=dm?.members?.filter((m:any)=>m.id!==user?.id)||[];const title=dm?.name||others.map((m:any)=>m.username).join(', ')||'Direct messages';const chat=useRoomMessages(conversationId,true);
+ const loadShared=async()=>{if(!conversationId)return;setSharedOpen(true);setMembersOpen(false);setSharedLoading(true);try{const result=await api<any>(`/dms/${conversationId}/attachments`);setSharedItems(result.attachments||[]);}catch(error:any){toast.show(error.message,'error');}finally{setSharedLoading(false);}};
+ const [searchMatches,setSearchMatches]=useState<ChatMessage[]|null>(null);const [searchBusy,setSearchBusy]=useState(false);const searchGeneration=useRef(0);
+ useEffect(()=>{const query=messageSearch.trim();const generation=++searchGeneration.current;if(!messageSearchOpen||query.length<2||!conversationId){setSearchMatches(null);setSearchBusy(false);return;}setSearchMatches(null);setSearchBusy(true);const timer=window.setTimeout(()=>api<{messages:ChatMessage[]}>(`/dms/${conversationId}/messages/search?q=${encodeURIComponent(query)}`).then(result=>{if(generation===searchGeneration.current)setSearchMatches(result.messages||[]);}).catch(error=>{if(generation===searchGeneration.current){setSearchMatches([]);toast.show(error.message,'error');}}).finally(()=>{if(generation===searchGeneration.current)setSearchBusy(false);}),250);return()=>window.clearTimeout(timer);},[conversationId,messageSearch,messageSearchOpen]);
+ useEffect(()=>{const toggle=()=>setMembersOpen(value=>!value);window.addEventListener('relay:toggle-members',toggle);return()=>window.removeEventListener('relay:toggle-members',toggle);},[]);
  const sendEdit=async()=>{if(!edit)return;try{const r=await patch<{message:ChatMessage}>(`/messages/${edit.id}`,{content:edit.content});chat.setMessages(v=>v.map(m=>m.id===r.message.id?r.message:m));setEdit(null);}catch(e:any){toast.show(e.message,'error');}};
  if(!conversationId)return <div className="dm-empty-stage"><div className="dm-empty-illustration"><MessageCircle size={34}/><span>R</span></div><p className="dm-empty-eyebrow">RELAY MESSAGES</p><h2>Your conversations, all together.</h2><p className="dm-empty-copy">Pick a chat from the list, message a friend, or bring your group into one place.</p><Link className="btn primary" to="/friends"><MessageSquarePlus size={16}/> Start a conversation</Link></div>;
- const visibleMessages=messageSearch.trim()?chat.messages.filter(message=>message.content.toLowerCase().includes(messageSearch.toLowerCase())):chat.messages;
- return <div className="chat-page dm-chat-page"><div className="chat-heading dm-chat-heading"><div className="dm-title-line">{others.length===1?<Avatar name={others[0].username} src={others[0].avatar} size="lg" presence={others[0].presence}/>:<span className="dm-group-avatar"><UsersRound size={21}/></span>}<div className="dm-heading-copy"><h2>{title}</h2><p>{dm?.is_group?'Group · '+(dm?.members?.length||0)+' members':others[0]?.status_text||others[0]?.presence||'Direct message'}</p></div></div><div className="chat-head-actions"><button className={`icon-btn ${messageSearchOpen?'active':''}`} onClick={()=>{setMessageSearchOpen(v=>!v);setMessageSearch('');}} title="Search this chat"><Search size={18}/></button><button className={`icon-btn ${membersOpen?'active':''}`} onClick={()=>setMembersOpen(v=>!v)} title="Conversation members"><Users size={18}/></button></div></div>
+ const query=messageSearch.trim();const visibleMessages=query.length>=2?(searchMatches||[]):query?chat.messages.filter(message=>message.content.toLowerCase().includes(query.toLowerCase())):chat.messages;
+ return <div className="chat-page dm-chat-page"><div className="chat-heading dm-chat-heading"><div className="dm-title-line">{others.length===1?<Avatar name={others[0].username} src={others[0].avatar} size="lg" presence={others[0].presence}/>:<span className="dm-group-avatar"><UsersRound size={21}/></span>}<div className="dm-heading-copy"><h2>{title}</h2><p>{dm?.is_group?'Group · '+(dm?.members?.length||0)+' members':others[0]?.status_text||others[0]?.presence||'Direct message'}</p></div></div><div className="chat-head-actions"><button className={`icon-btn ${messageSearchOpen?'active':''}`} onClick={()=>{setMessageSearchOpen(v=>!v);setMessageSearch('');}} title="Search this chat"><Search size={18}/></button><button className={`icon-btn ${sharedOpen?'active':''}`} onClick={()=>void loadShared()} title="Shared media"><Images size={18}/></button><button className={`icon-btn ${membersOpen?'active':''}`} onClick={()=>{setSharedOpen(false);setMembersOpen(v=>!v);}} title="Conversation members"><Users size={18}/></button></div></div>
  {messageSearchOpen&&<div className="dm-search-inline"><Search size={15}/><input autoFocus value={messageSearch} onChange={e=>setMessageSearch(e.target.value)} placeholder="Search messages in this chat"/><span>{visibleMessages.length} matches</span><button onClick={()=>{setMessageSearchOpen(false);setMessageSearch('');}} aria-label="Close search"><X size={15}/></button></div>}
- <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={visibleMessages} loading={chat.loading} hasOlder={!messageSearch&&chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">IN THIS CHAT · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}</div>
+ <div className="chat-main"><div className="chat-scroll dm-scroll"><MessageList messages={visibleMessages} isDm={true} loading={chat.loading||searchBusy} hasOlder={!messageSearch&&chat.hasOlder} loadingOlder={chat.loadingOlder} onLoadOlder={()=>void chat.loadOlder()} currentUserId={user?.id} onReply={setReply} onEdit={m=>setEdit({...m})} onMore={setActionMessage} onReact={(m,e)=>void post(`/messages/${m.id}/reactions`,{emoji:e}).catch((x:any)=>toast.show(x.message,'error'))}/></div>{membersOpen&&<aside className="member-panel"><div className="section-label">IN THIS CHAT · {dm?.members?.length||0}</div>{dm?.members?.map((m:any)=><div className="member-row" key={m.id}><Avatar name={m.username} src={m.avatar} size="sm" presence={m.presence}/><span>{m.username}</span></div>)}</aside>}{sharedOpen&&<SharedMediaPanel items={sharedItems} loading={sharedLoading} onClose={()=>setSharedOpen(false)}/>}</div>
  {chat.typing&&<div className="typing-note">{chat.typing}</div>}
- <ChatComposer conversationId={conversationId} isDm socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
+ <ChatComposer key={conversationId} conversationId={conversationId} isDm socket={chat.socket} onSent={chat.add} reply={reply} clearReply={()=>setReply(null)}/>
  {edit&&<Modal title="Edit message" onClose={()=>setEdit(null)}><textarea className="modal-textarea" value={edit.content} onChange={e=>setEdit({...edit,content:e.target.value})}/><div className="modal-actions"><Button variant="secondary" onClick={()=>setEdit(null)}>Cancel</Button><Button onClick={()=>void sendEdit()}>Save</Button></div></Modal>}
  {actionMessage&&<MessageActions message={actionMessage} isDm onClose={()=>setActionMessage(null)}/>}
  </div>;

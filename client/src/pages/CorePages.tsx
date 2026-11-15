@@ -9,70 +9,45 @@ export function HomePage(){
  const {user}=useAuth();
  const [friends,setFriends]=useState<any[]>([]);
  const [dms,setDms]=useState<any[]>([]);
+ const [servers,setServers]=useState<any[]>([]);
+ const [profile,setProfile]=useState<any>(null);
  const [loading,setLoading]=useState(true);
- useEffect(()=>{
-  let active=true;
-  Promise.all([api('/friends'),api('/dms')])
-   .then(([f,d]:any[])=>{if(!active)return;setFriends(f.friends||[]);setDms(d.conversations||[]);})
-   .catch(()=>{})
-   .finally(()=>{if(active)setLoading(false);});
-  return()=>{active=false;};
- },[]);
+ const [loadError,setLoadError]=useState('');
+ const load=async()=>{
+  if(!user?.id)return;
+  setLoading(true);setLoadError('');
+  try{
+   const [f,d,s,p]=await Promise.all([api('/friends'),api('/dms'),api('/servers'),api(`/profile/${user.id}`)]);
+   setFriends((f as any).friends||[]);setDms((d as any).conversations||[]);setServers((s as any).servers||[]);setProfile((p as any).user||null);
+  }catch(error:any){setLoadError(error.message||'Relay could not load your home right now.');}
+  finally{setLoading(false);}
+ };
+ useEffect(()=>{void load();},[user?.id]);
  const accepted=friends.filter(f=>f.status==='accepted');
  const pending=friends.filter(f=>f.status==='pending');
- const firstName=user?.username||'friend';
+ const profileReady=!!(profile?.avatar||profile?.bio||profile?.status_text);
+ const hasMessage=dms.some(dm=>!!dm.last_message);
+ const setup=[
+  {label:'Set up your profile',description:'Add an avatar, bio, or status so people recognise you.',done:profileReady,to:`/profile/${user?.id}`,action:'Edit profile'},
+  {label:'Meet someone on Relay',description:'Add a friend to start a conversation.',done:accepted.length>0,to:'/friends',action:'Find friends'},
+  {label:'Join a community',description:'Find a club or create your own.',done:servers.length>0,to:'/discover',action:'Explore clubs'},
+  {label:'Send your first message',description:'Say hello in a direct message or community channel.',done:hasMessage,to:'/friends',action:'Start chatting'}
+ ];
+ const completed=setup.filter(item=>item.done).length;
  return <div className="page-content clubhouse-home">
-  <section className="home-hero">
-   <div className="home-hero-copy">
-    <div className="home-kicker"><span>✦</span> YOUR LITTLE CORNER OF RELAY</div>
-    <h1>Welcome, {firstName}!</h1>
-    <p>Your messages, friends, and communities are all in one place.</p>
-    <div className="home-hero-actions">
-     <Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open messages</Link>
-     <Link className="home-quiet-link" to="/friends"><Users size={18}/> Meet my people <ArrowRight size={16}/></Link>
-    </div>
-    <div className="home-mini-counts">
-     <span><b>{accepted.length}</b> {accepted.length===1?'friend':'friends'}</span>
-     <i/>
-     <span><b>{dms.length}</b> {dms.length===1?'chat':'chats'}</span>
-    </div>
+  <section className="home-hero"><div className="home-hero-copy"><div className="home-kicker"><span>✦</span> YOUR LITTLE CORNER OF RELAY</div><h1>Welcome, {user?.username||'friend'}!</h1><p>Your messages, friends, and communities are all in one place.</p><div className="home-hero-actions"><Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open messages</Link><Link className="home-quiet-link" to="/friends"><Users size={18}/> Meet my people <ArrowRight size={16}/></Link></div><div className="home-mini-counts"><span><b>{accepted.length}</b> {accepted.length===1?'friend':'friends'}</span><i/><span><b>{dms.length}</b> {dms.length===1?'chat':'chats'}</span><i/><span><b>{servers.length}</b> {servers.length===1?'club':'clubs'}</span></div></div><div className="home-hero-art"><img className="relay-mascot-art" src="/relay-mascots.svg" alt="Three friendly Relay chat mascots"/><span className="hero-art-caption"><i/> Good conversations start here</span></div></section>
+  {loadError&&<div className="home-load-error" role="alert"><div><b>Some of your home data didn't load.</b><small>{loadError}</small></div><Button variant="secondary" onClick={()=>void load()}>Try again</Button></div>}
+  {!loading&&completed<setup.length&&<section className="onboarding-card"><div className="onboarding-heading"><div><span className="home-board-kicker">YOUR FIRST STEPS</span><h2>Make Relay yours</h2><p>A few quick steps to get your space started.</p></div><strong>{completed}/{setup.length}</strong></div><div className="onboarding-progress"><span style={{width:`${completed/setup.length*100}%`}}/></div><div className="onboarding-list">{setup.map((item,index)=><div className={`onboarding-item ${item.done?'done':''}`} key={item.label}><span className="onboarding-check">{item.done?<Check size={15}/>:index+1}</span><div><b>{item.label}</b><small>{item.description}</small></div><Link to={item.to}>{item.done?'Done':item.action}<ArrowRight size={14}/></Link></div>)}</div></section>}
+  {loading?<div className="home-loading"><Loading label="Getting your Relay ready…"/></div>:<>
+   <div className="home-shortcut-row" aria-label="Quick places"><Link to="/discover" className="home-shortcut shortcut-clubs"><span className="shortcut-art"><Compass size={25}/><i>✳</i></span><span><b>Find a club</b><small>Explore new interests</small></span><ArrowRight size={18}/></Link><Link to="/friends" className="home-shortcut shortcut-people"><span className="shortcut-art"><Users size={25}/><i>♥</i></span><span><b>Find your people</b><small>Add a friend</small></span><ArrowRight size={18}/></Link><Link to="/channels/@me" className="home-shortcut shortcut-messages"><span className="shortcut-art"><MessageCircle size={25}/><i>✦</i></span><span><b>Read your chats</b><small>Pick up where you left off</small></span><ArrowRight size={18}/></Link></div>
+   <div className="home-lower-grid">
+    <section className="home-board home-friend-board"><header className="home-board-heading"><div><span className="home-board-kicker">THE PEOPLE CORNER</span><h2>Your friends</h2></div><Link to="/friends">See everyone <ArrowRight size={15}/></Link></header>{accepted.length?<div className="home-friend-list">{accepted.slice(0,5).map((f:any,index:number)=><div className={'home-friend-card home-friend-card-'+(index%4)} key={f.id}><Avatar name={f.user.username} src={f.user.avatar} size="lg" presence={f.user.presence}/><div><b>{f.user.username}</b><small>{f.user.status_text||f.user.presence||'On Relay'}</small></div><Link to={'/profile/'+f.user.id} aria-label={'Open '+f.user.username+"'s profile"}><ArrowRight size={17}/></Link></div>)}</div>:<div className="home-friendly-empty"><span className="empty-doodle">☺</span><div><b>Your people are waiting to meet you.</b><p>Add someone you know to start chatting.</p><Link to="/friends">Find a friend <ArrowRight size={15}/></Link></div></div>}</section>
+    <section className="home-board home-chat-board"><header className="home-board-heading"><div><span className="home-board-kicker">PICK UP WHERE YOU LEFT OFF</span><h2>Recent chats</h2></div><Link to="/channels/@me">All chats <ArrowRight size={15}/></Link></header>{dms.length?<div className="home-recent-list">{dms.slice(0,5).map((dm:any,index:number)=>{const others=dm.members.filter((m:any)=>m.id!==user?.id);const name=dm.name||others.map((m:any)=>m.username).join(', ')||'Group chat';return <Link to={'/channels/@me/'+dm.id} className={'home-recent-chat recent-chat-'+(index%4)} key={dm.id}><span className="recent-chat-avatar">{others.length>1?<Users size={19}/>:<Avatar name={others[0]?.username||'Friend'} src={others[0]?.avatar} size="md"/>}</span><span className="recent-chat-copy"><b>{name}</b><small>{dm.last_message||'Say hello and start the conversation'}</small></span><ArrowRight size={17}/></Link>;})}</div>:<div className="home-friendly-empty"><span className="empty-doodle">✉</span><div><b>No chats just yet.</b><p>Choose a friend and send your first hello.</p><Link to="/friends">Find someone to chat with <ArrowRight size={15}/></Link></div></div>}</section>
    </div>
-   <div className="home-hero-art">
-     <img className="relay-mascot-art" src="/relay-mascots.svg" alt="Three friendly Relay chat mascots"/>
-     <span className="hero-art-caption"><i/> Good conversations start here</span>
-    </div>
-  </section>
-  <div className="home-shortcut-row" aria-label="Quick places">
-   <Link to="/discover" className="home-shortcut shortcut-clubs"><span className="shortcut-art"><Compass size={25}/><i>✳</i></span><span><b>Find a club</b><small>Explore new interests</small></span><ArrowRight size={18}/></Link>
-   <Link to="/friends" className="home-shortcut shortcut-people"><span className="shortcut-art"><Users size={25}/><i>♥</i></span><span><b>Find your people</b><small>Add a friend</small></span><ArrowRight size={18}/></Link>
-   <Link to="/channels/@me" className="home-shortcut shortcut-messages"><span className="shortcut-art"><MessageCircle size={25}/><i>✦</i></span><span><b>Read your chats</b><small>Pick up where you left off</small></span><ArrowRight size={18}/></Link>
-  </div>
-  <div className="home-lower-grid">
-   <section className="home-board home-friend-board">
-    <header className="home-board-heading"><div><span className="home-board-kicker">THE PEOPLE CORNER</span><h2>Your friends</h2></div><Link to="/friends">See everyone <ArrowRight size={15}/></Link></header>
-    {loading?<Loading label="Finding your friends…"/>:accepted.length?
-     <div className="home-friend-list">{accepted.slice(0,5).map((f:any,index:number)=><div className={'home-friend-card home-friend-card-'+(index%4)} key={f.id}>
-      <Avatar name={f.user.username} src={f.user.avatar} size="lg" presence={f.user.presence}/>
-      <div><b>{f.user.username}</b><small>{f.user.status_text||f.user.presence||'On Relay'}</small></div>
-      <Link to={'/profile/'+f.user.id} aria-label={'Open '+f.user.username+"'s profile"}><ArrowRight size={17}/></Link>
-     </div>)}</div>
-     :<div className="home-friendly-empty"><span className="empty-doodle">☺</span><div><b>Your people are waiting to meet you.</b><p>Add someone you know to start chatting.</p><Link to="/friends">Find a friend <ArrowRight size={15}/></Link></div></div>}
-   </section>
-   <section className="home-board home-chat-board">
-    <header className="home-board-heading"><div><span className="home-board-kicker">PICK UP WHERE YOU LEFT OFF</span><h2>Recent chats</h2></div><Link to="/channels/@me">All chats <ArrowRight size={15}/></Link></header>
-    {loading?<Loading label="Loading your chats…"/>:dms.length?
-     <div className="home-recent-list">{dms.slice(0,5).map((dm:any,index:number)=>{const others=dm.members.filter((m:any)=>m.id!==user?.id);const name=dm.name||others.map((m:any)=>m.username).join(', ')||'Group chat';return <Link to={'/channels/@me/'+dm.id} className={'home-recent-chat recent-chat-'+(index%4)} key={dm.id}>
-      <span className="recent-chat-avatar">{others.length>1?<Users size={19}/>:<Avatar name={others[0]?.username||'Friend'} src={others[0]?.avatar} size="md"/>}</span>
-      <span className="recent-chat-copy"><b>{name}</b><small>{dm.last_message||'Say hello and start the conversation'}</small></span>
-      <ArrowRight size={17}/>
-     </Link>;})}</div>
-     :<div className="home-friendly-empty"><span className="empty-doodle">✉</span><div><b>No chats just yet.</b><p>Choose a friend and send your first hello.</p><Link to="/friends">Find someone to chat with <ArrowRight size={15}/></Link></div></div>}
-   </section>
-  </div>
-  {pending.length>0&&<div className="home-pending-note"><span>✉</span><div><b>You have {pending.length} friend request{pending.length===1?'':'s'}.</b><small>Someone would like to connect with you.</small></div><Link to="/friends">Take a look <ArrowRight size={15}/></Link></div>}
+   {pending.length>0&&<div className="home-pending-note"><span>✉</span><div><b>You have {pending.length} friend request{pending.length===1?'':'s'}.</b><small>Someone would like to connect with you.</small></div><Link to="/friends">Take a look <ArrowRight size={15}/></Link></div>}
+  </>}
  </div>;
 }
-
 export function FriendsPage(){
  const toast=useToast();const navigate=useNavigate();const [friends,setFriends]=useState<any[]>([]);const [tab,setTab]=useState('online');const [username,setUsername]=useState('');const [busy,setBusy]=useState(false);const [dmUsers,setDmUsers]=useState<string[]>([]);const [groupOpen,setGroupOpen]=useState(false);const [groupName,setGroupName]=useState('');const [groupUsers,setGroupUsers]=useState<string[]>([]);
  const load=async(showErrors=true)=>{try{const r=await api<{friends:any[]}>('/friends');setFriends(r.friends);}catch(e:any){if(showErrors)toast.show(e.message,'error');}};useEffect(()=>{void load();const refreshWhenActive=()=>{if(document.visibilityState==='visible')void load(false);};const refreshFromSocket=()=>void load(false);const timer=window.setInterval(()=>void load(false),15000);window.addEventListener('focus',refreshWhenActive);document.addEventListener('visibilitychange',refreshWhenActive);window.addEventListener('relay:friends-refresh',refreshFromSocket);return()=>{window.clearInterval(timer);window.removeEventListener('focus',refreshWhenActive);document.removeEventListener('visibilitychange',refreshWhenActive);window.removeEventListener('relay:friends-refresh',refreshFromSocket);};},[]);
@@ -93,46 +68,55 @@ export function FriendsPage(){
 }
 
 export function DiscoverPage(){
- const [q,setQ]=useState('');
- const [servers,setServers]=useState<any[]>([]);
- const [joined,setJoined]=useState<string[]>([]);
- const [loading,setLoading]=useState(true);
- const toast=useToast();
- const navigate=useNavigate();
- useEffect(()=>{
-  const timer=window.setTimeout(()=>{
-   setLoading(true);
-   api('/discover?q='+encodeURIComponent(q))
-    .then((r:any)=>setServers(r.servers))
-    .catch((e:any)=>toast.show(e.message,'error'))
-    .finally(()=>setLoading(false));
-  },220);
-  return()=>window.clearTimeout(timer);
- },[q]);
- const join=async(id:string)=>{
-  try{await post('/servers/'+id+'/join');setJoined(v=>[...v,id]);toast.show('You joined the club.','success');navigate('/channels/'+id);}
-  catch(e:any){toast.show(e.message,'error');}
- };
+ const [q,setQ]=useState('');const [sort,setSort]=useState<'popular'|'newest'|'active'>('popular');const [category,setCategory]=useState('All');
+ const [servers,setServers]=useState<any[]>([]);const [joined,setJoined]=useState<string[]>([]);const [loading,setLoading]=useState(true);const [preview,setPreview]=useState<any>(null);const [previewLoading,setPreviewLoading]=useState(false);
+ const toast=useToast();const navigate=useNavigate();
+ useEffect(()=>{let active=true;const timer=window.setTimeout(()=>{setLoading(true);api('/discover?q='+encodeURIComponent(q)+'&sort='+sort).then((r:any)=>{if(active)setServers(r.servers||[]);}).catch((e:any)=>{if(active){setServers([]);toast.show(e.message,'error');}}).finally(()=>{if(active)setLoading(false);});},220);return()=>{active=false;window.clearTimeout(timer);};},[q,sort]);
+ const categories=['All','Gaming','Anime','Technology','Art','Music','Education'];
+ const keywords:Record<string,string[]>={Gaming:['game','gaming','minecraft','roblox','fortnite','valorant','playstation','xbox'],Anime:['anime','manga','otaku','cosplay'],Technology:['technology','tech','coding','programming','developer','computer','ai'],Art:['art','draw','drawing','design','creative','animation'],Music:['music','song','band','instrument','producer'],Education:['study','school','learn','education','homework','science','math']};
+ const visibleServers=useMemo(()=>{const list=servers.filter((s:any)=>category==='All'||keywords[category].some(word=>(String(s.name||'')+' '+String(s.description||'')).toLowerCase().includes(word)));return [...list].sort((a:any,b:any)=>sort==='newest'?new Date(b.created_at).getTime()-new Date(a.created_at).getTime():sort==='active'?new Date(b.last_active_at||b.created_at).getTime()-new Date(a.last_active_at||a.created_at).getTime():Number(b.member_count||0)-Number(a.member_count||0));},[servers,category,sort]);
+ const loadPreview=async(id:string)=>{setPreview(null);setPreviewLoading(true);try{const result=await api<any>('/discover/'+id);setPreview(result.community);}catch(error:any){toast.show(error.message,'error');}finally{setPreviewLoading(false);}};
+ const join=async(id:string)=>{try{await post('/servers/'+id+'/join');setJoined(v=>[...v,id]);toast.show('You joined the club.','success');setPreview(null);navigate('/channels/'+id);}catch(e:any){toast.show(e.message,'error');}};
  return <div className="page-content clubhouse-discover">
-  <section className="clubs-intro">
-   <div><span className="clubs-kicker">AROUND THE NEIGHBOURHOOD</span><h1>Find your kind of people.</h1><p>There are lots of little communities to explore. Look for one that shares your favourite things.</p></div>
-   <div className="clubs-intro-art" aria-hidden="true"><span className="clubs-art-sun">✳</span><span className="clubs-art-house">⌂</span><span className="clubs-art-star">✦</span><span className="clubs-art-line"/></div>
-  </section>
-  <div className="clubs-search-bar"><SearchInput value={q} onChange={setQ} placeholder="What are you interested in?"/><span>{servers.length} {servers.length===1?'club':'clubs'} to explore</span></div>
-  {loading?<Loading label="Looking around…"/>:servers.length?
-   <div className="clubs-grid">{servers.map((s:any,index:number)=><article className={'club-card club-card-'+(index%5)} key={s.id}>
-    <div className={'club-art club-art-'+(index%5)} aria-hidden="true"><span className="club-art-initial">{(s.name||'R').slice(0,1).toUpperCase()}</span><i className="club-art-shape club-art-shape-one"/><i className="club-art-shape club-art-shape-two"/><span className="club-art-spark">✳</span><span className="club-art-ribbon">A PLACE TO BELONG</span></div>
-    <div className="club-card-content"><div className="club-card-overline"><span>COMMUNITY CLUB</span><span><Users size={14}/>{s.member_count||0}</span></div><h2>{s.name}</h2><p>{s.description||'A friendly community on Relay. Come and have a look around.'}</p><div className="club-card-bottom"><span><Globe size={14}/> Public club</span><Button disabled={joined.includes(s.id)} onClick={()=>void join(s.id)}>{joined.includes(s.id)?'You joined':'Join this club'} <ArrowRight size={15}/></Button></div></div>
-   </article>)}</div>
-   :<div className="clubs-empty"><span>⌕</span><h2>No clubs found</h2><p>Try a different word, or come back and explore again.</p></div>}
+  <section className="clubs-intro"><div><span className="clubs-kicker">AROUND THE NEIGHBOURHOOD</span><h1>Find your kind of people.</h1><p>Explore communities by interest, see what they’re about, and find a place to belong.</p></div><div className="clubs-intro-art" aria-hidden="true"><span className="clubs-art-sun">✳</span><span className="clubs-art-house">⌂</span><span className="clubs-art-star">✦</span><span className="clubs-art-line"/></div></section>
+  <div className="clubs-search-bar"><SearchInput value={q} onChange={setQ} placeholder="Search communities and interests…"/><span>{visibleServers.length} {visibleServers.length===1?'club':'clubs'}</span></div>
+  <div className="discover-controls"><div className="discover-categories" role="group" aria-label="Community categories">{categories.map(item=><button key={item} className={category===item?'active':''} onClick={()=>setCategory(item)}>{item}</button>)}</div><label className="discover-sort"><span>Sort by</span><select value={sort} onChange={e=>setSort(e.target.value as any)}><option value="popular">Popular</option><option value="active">Recently active</option><option value="newest">Newest</option></select></label></div>
+  {loading?<Loading label="Looking around…"/>:visibleServers.length?<div className="clubs-grid">{visibleServers.map((s:any,index:number)=><article className={'club-card club-card-'+(index%5)} key={s.id}><div className={'club-art club-art-'+(index%5)} aria-hidden="true"><span className="club-art-initial">{(s.name||'R').slice(0,1).toUpperCase()}</span><i className="club-art-shape club-art-shape-one"/><i className="club-art-shape club-art-shape-two"/><span className="club-art-spark">✳</span><span className="club-art-ribbon">A PLACE TO BELONG</span></div><div className="club-card-content"><div className="club-card-overline"><span>COMMUNITY CLUB</span><span><Users size={14}/>{s.member_count||0}</span></div><h2>{s.name}</h2><p>{s.description||'A friendly community on Relay. Come and have a look around.'}</p><div className="club-card-bottom"><span><Globe size={14}/> Public club</span><div className="club-card-actions"><Button variant="secondary" onClick={()=>void loadPreview(s.id)}>Preview</Button><Button disabled={joined.includes(s.id)} onClick={()=>void join(s.id)}>{joined.includes(s.id)?'You joined':'Join'} <ArrowRight size={15}/></Button></div></div></div></article>)}</div>:<div className="clubs-empty"><span>⌕</span><h2>No clubs found</h2><p>Try another search or interest category.</p><Button variant="secondary" onClick={()=>{setQ('');setCategory('All');}}>Clear filters</Button></div>}
+  {previewLoading&&<Modal title="Community preview" onClose={()=>setPreviewLoading(false)}><Loading label="Loading community preview…"/></Modal>}
+  {preview&&!previewLoading&&<Modal title="Community preview" onClose={()=>setPreview(null)}><div className="community-preview"><span className="clubs-kicker">PUBLIC COMMUNITY</span><h2>{preview.name}</h2><p>{preview.description||'A friendly Relay community. Join to see its channels and meet its members.'}</p><div className="community-preview-stats"><span><Users size={16}/>{preview.member_count} members</span><span><Hash size={16}/>{preview.channel_count} text channels</span></div><Button onClick={()=>void join(preview.id)}>Join this community <ArrowRight size={15}/></Button></div></Modal>}
  </div>;
 }
-
 export function ProfilePage(){
  const {userId}=useParams();const {user:me}=useAuth();const toast=useToast();const navigate=useNavigate();const [profile,setProfile]=useState<any>(null);const [blocked,setBlocked]=useState(false);const [loading,setLoading]=useState(true);const [friends,setFriends]=useState<any[]>([]);const [editOpen,setEditOpen]=useState(false);const [form,setForm]=useState<any>({});
  const own=userId===me?.id;
- const load=async()=>{if(!userId)return;try{const [p,f]=await Promise.all([api<any>(`/profile/${userId}`),api<any>('/friends')]);setProfile(p.user);setBlocked(p.isBlocked);setFriends(f.friends||[]);setForm({username:p.user.username,bio:p.user.bio||'',status_text:p.user.status_text||'',avatar:p.user.avatar||'',banner:p.user.banner||''});}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};
- useEffect(()=>{setLoading(true);void load();const refreshFromSocket=()=>void load();window.addEventListener('relay:friends-refresh',refreshFromSocket);return()=>window.removeEventListener('relay:friends-refresh',refreshFromSocket);},[userId]);
+ const profileRequest=React.useRef(0);
+ const load=async()=>{
+  const request=++profileRequest.current;
+  if(!userId){setProfile(null);setLoading(false);return;}
+  try{
+   const [p,f]=await Promise.all([api<any>(`/profile/${userId}`),api<any>('/friends')]);
+   if(request!==profileRequest.current)return;
+   setProfile(p.user);
+   setBlocked(p.isBlocked);
+   setFriends(f.friends||[]);
+   setForm({username:p.user.username,bio:p.user.bio||'',status_text:p.user.status_text||'',avatar:p.user.avatar||'',banner:p.user.banner||''});
+  }catch(e:any){
+   if(request===profileRequest.current){setProfile(null);toast.show(e.message,'error');}
+  }finally{
+   if(request===profileRequest.current)setLoading(false);
+  }
+ };
+ useEffect(()=>{
+  setLoading(true);
+  setProfile(null);
+  void load();
+  const refreshFromSocket=()=>void load();
+  window.addEventListener('relay:friends-refresh',refreshFromSocket);
+  return()=>{
+   profileRequest.current+=1;
+   window.removeEventListener('relay:friends-refresh',refreshFromSocket);
+  };
+ },[userId]);
  const relationship=friends.find(f=>f.user.id===userId);const save=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',form);setProfile(r.user);setEditOpen(false);toast.show('Profile updated.','success');}catch(e:any){toast.show(e.message,'error');}};
  const friend=async()=>{try{if(relationship){await del(`/friends/${relationship.id}`);}else{await post('/friends/request',{username:profile.username});}await load();toast.show(relationship?'Friend relationship removed.':'Friend request sent.','success');}catch(e:any){toast.show(e.message,'error');}};
  const dm=async()=>{try{const r=await post<any>('/dms',{userIds:[userId]});navigate(`/channels/@me/${r.conversation.id}`);}catch(e:any){toast.show(e.message,'error');}};
@@ -153,13 +137,12 @@ export function InvitePage(){
 
 export function InboxPage(){
  const [items,setItems]=useState<any[]>([]);const [filter,setFilter]=useState('all');const toast=useToast();
- const load=async()=>{try{const r=await api<any>('/notifications');setItems(r.notifications);}catch(e:any){toast.show(e.message,'error');}};useEffect(()=>{void load();},[]);
+ const load=async(isActive:()=>boolean=()=>true)=>{try{const r=await api<any>('/notifications');if(isActive())setItems(r.notifications);}catch(e:any){if(isActive())toast.show(e.message,'error');}};useEffect(()=>{let active=true;const onNew=(event:Event)=>{const item=(event as CustomEvent).detail;if(!item)return;setItems(current=>[item,...current.filter(existing=>existing.id!==item.id)].slice(0,100));};const refresh=()=>{if(document.visibilityState==='visible')void load(()=>active);};void load(()=>active);const timer=window.setInterval(()=>void load(()=>active),30000);window.addEventListener('relay:notification-new',onNew);window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',refresh);return()=>{active=false;window.clearInterval(timer);window.removeEventListener('relay:notification-new',onNew);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',refresh);};},[]);
  const visible=items.filter(n=>filter==='all'||(filter==='mentions'?n.type==='mention':n.type!=='mention'));
  const markAll=async()=>{try{await post('/notifications/read-all');setItems(v=>v.map(n=>({...n,read_at:new Date().toISOString()})));}catch(e:any){toast.show(e.message,'error');}};
  return <div className="page-content"><PageHeader title="Inbox" subtitle="Your recent mentions, DMs, friend requests, and community updates." actions={<Button variant="secondary" onClick={()=>void markAll()}><Check size={15}/> Mark all read</Button>}/><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>All activity</button><button className={filter==='mentions'?'active':''} onClick={()=>setFilter('mentions')}>Mentions</button><button className={filter==='other'?'active':''} onClick={()=>setFilter('other')}>Other</button></div>{visible.length?visible.map(n=><Link to={n.href} key={n.id} className={`inbox-row ${n.read_at?'read':''}`} onClick={async()=>{if(!n.read_at){await post(`/notifications/${n.id}/read`);setItems(v=>v.map(x=>x.id===n.id?{...x,read_at:new Date().toISOString()}:x));}}}><span className="notification-dot"/><div><b>{n.title}</b><p>{n.body}</p><time>{new Date(n.created_at).toLocaleString()}</time></div></Link>):<EmptyState title="Nothing here yet" description="New activity will appear here when someone messages, mentions, invites, or adds you." icon={Activity}/>}</div>;
 }
-export function HelpPage(){return <div className="page-content"><PageHeader title="Relay help" subtitle="A quick guide to this local community app."/><div className="help-grid">{[['Getting started','Create an account, then join a public community from Discover or create your own server.'],['Channels and messages','Text channels support messages, replies, edits, reactions, pins, search, and local attachments. Enter sends; Shift+Enter adds a new line.'],['Friends and DMs','Send friend requests by exact username. Incoming and outgoing are shown from the currently signed-in account. Browser tabs share one session cookie, so use separate browser profiles to test two accounts at once. Direct messages respect privacy settings.'],['Voice and screen sharing','Join a voice channel to request microphone access. Camera and screen sharing require browser permissions and HTTPS outside localhost. Peer connections may fail without TURN.'],['Account and safety','Manage password, sessions, blocks, privacy, notifications, appearance, accessibility, and keybind preferences in Settings.'],['Demo boundaries','No email provider, payment processor, external OAuth, or hosted push service is configured. Plus and Shop are informational only.']] .map(([title,body])=><article className="help-card" key={title}><h3>{title}</h3><p>{body}</p></article>)}</div></div>;}
-
+export function HelpPage(){return <div className="page-content"><PageHeader title="Relay help" subtitle="A quick guide to your communities and conversations."/><div className="help-grid">{[['Getting started','Set up your profile, add a friend, join or create a community, and send your first message.'],['Channels and messages','Text channels support messages, replies, edits, reactions, pins, search, saved drafts, attachments, and shared-media browsing. Enter sends; Shift+Enter adds a new line.'],['Friends and DMs','Send friend requests by exact username. Incoming and outgoing requests appear in Friends. Direct messages respect current privacy and block settings, and show read receipts.'],['Voice','Voice channels support microphone audio, camera, and screen sharing. Browser permissions are required, and TURN relay settings may be needed on restrictive networks.'],['Account and safety','Manage your password, sessions, blocks, privacy, notifications, appearance, accessibility, and keybind preferences in Settings.'],['Service setup','Hosted attachments require S3-compatible storage credentials. Password recovery requires an email provider. Relay Plus and Shop are previews; no payments are processed.']].map(([title,body])=><article className="help-card" key={title}><h3>{title}</h3><p>{body}</p></article>)}</div></div>;}
 export function EventsPage(){
  const toast=useToast();const {user}=useAuth();const [events,setEvents]=useState<any[]>([]);const [servers,setServers]=useState<any[]>([]);const [modalOpen,setModalOpen]=useState(false);const [editing,setEditing]=useState<any>(null);const [form,setForm]=useState<any>({serverId:'',title:'',description:'',starts_at:'',location:''});const [loading,setLoading]=useState(true);const [saving,setSaving]=useState(false);
  const load=async()=>{try{const [e,s]=await Promise.all([api<any>('/events'),api<any>('/servers')]);setEvents(e.events);setServers(s.servers);if(!form.serverId&&s.servers[0])setForm((f:any)=>({...f,serverId:s.servers[0].id}));}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};
@@ -178,6 +161,32 @@ export function EventsPage(){
 }
 
 export function InfoPage({kind}:{kind:'library'|'premium'|'shop'}){
- const config={library:{title:'Activity library',subtitle:'A small catalogue of things your community can do together.',icon:BookOpen,cards:[['Community prompts','Conversation starters and planning prompts.','Available in this local demo'],['Watch party planning','Coordinate a shared viewing session.','Planning guide only'],['Study room','Set up a focused study channel.','Use a server voice or text channel']]},premium:{title:'Relay Plus',subtitle:'Optional premium features are informational in this demo.',icon:Gift,cards:[['Expanded profile themes','More profile appearance choices.','Concept preview'],['Larger uploads','Higher attachment limits for hosted plans.','Not enabled locally'],['Community perks','Extra server customization options.','Not enabled locally']]},shop:{title:'Relay shop',subtitle:'A catalogue preview. No checkout or payment processing is connected.',icon:Gift,cards:[['Profile accent pack','Colour presets for your profile.','Preview only'],['Server icon collection','Original community icon concepts.','Preview only'],['Seasonal decorations','Small profile decoration concepts.','Preview only']]}}[kind];const Icon=config.icon;
- return <div className="page-content"><PageHeader title={config.title} subtitle={config.subtitle}/><div className="feature-grid">{config.cards.map(([title,desc,status])=><article className="feature-card" key={title}><div className="feature-icon"><Icon size={22}/></div><h3>{title}</h3><p>{desc}</p><span className="status-label">{status}</span></article>)}</div>{kind!=='library'&&<div className="disclosure-note"><Lock size={16}/> This page is demo/information only. No payments, purchases, or paid services are activated.</div>}</div>;
+ const toast=useToast();
+ const [query,setQuery]=useState('');
+ const [category,setCategory]=useState('All');
+ const activities=[
+  {title:'Meet the community',category:'Conversation',description:'An easy starter for welcoming new members.',prompt:'WELCOME THREAD\n\nTell us: what should we call you, what are you into lately, and what made you join this community? Share one fun fact if you feel like it.'},
+  {title:'Tiny wins',category:'Conversation',description:'A positive check-in for the end of the day.',prompt:'TINY WINS CHECK-IN\n\nWhat is one small thing that went well today? It can be something ordinary. Let’s celebrate the little wins too.'},
+  {title:'Would you rather?',category:'Games',description:'A quick, low-pressure group conversation.',prompt:'WOULD YOU RATHER?\n\nWould you rather be able to pause time for 10 seconds or rewind the last 10 seconds once a day? Explain your choice, then write a new question for the next person.'},
+  {title:'Guess the song',category:'Games',description:'A music round for your text or voice channel.',prompt:'GUESS THE SONG\n\nOne person describes a song without naming the title, artist, or lyrics. Everyone else gets three guesses. Rotate who gives the clue each round.'},
+  {title:'Community game night',category:'Events',description:'A ready-to-fill plan for a friendly game night.',prompt:'GAME NIGHT PLAN\n\nGame: [choose together]\nDate and time: [add time zone]\nVoice/text channel: [channel]\nPlayers: [how many]\nRules: Be kind, keep it welcoming, and help new players join.\nBackup plan: [another game if the first choice does not work]'},
+  {title:'Watch party',category:'Events',description:'Plan a shared watch without spoiling the fun.',prompt:'WATCH PARTY PLAN\n\nWhat we are watching: [title]\nDate and time: [include time zone]\nWhere to meet: [channel]\nStart time: [time]\nSpoiler rule: No spoilers outside the watch channel until everyone has finished.\nBring: Snacks, headphones, and your reactions.'},
+  {title:'Study sprint',category:'Focus',description:'A short focus session with breaks.',prompt:'STUDY SPRINT\n\nGoal for this session: [one task]\nFocus time: 25 minutes\nBreak: 5 minutes\nCheck-in: Share your goal before starting.\nFinish: Share what you completed and what you will do next. No pressure if you need more time.'},
+  {title:'Weekly feedback',category:'Community',description:'Gather useful suggestions from members.',prompt:'WEEKLY COMMUNITY CHECK-IN\n\n1. What should we keep doing?\n2. What could be better?\n3. Is there a channel or activity you would like us to add?\nPlease keep feedback constructive. Every suggestion is welcome.'},
+  {title:'Plan a creative challenge',category:'Community',description:'Give the group a small creative project.',prompt:'CREATIVE CHALLENGE\n\nThis week’s theme: [choose a theme]\nMake: [drawing, edit, photo, story, music, or anything original]\nDeadline: [date and time zone]\nShare in: [channel]\nBe supportive. Everyone is welcome, whatever their skill level.'}
+ ];
+ const categories=['All','Conversation','Games','Events','Focus','Community'];
+ const visible=activities.filter(item=>(category==='All'||item.category===category)&&(`${item.title} ${item.description} ${item.prompt}`).toLowerCase().includes(query.trim().toLowerCase()));
+ const copy=async(prompt:string)=>{
+  try{await navigator.clipboard.writeText(prompt);toast.show('Activity copied. Paste it into a channel.','success');}
+  catch{toast.show('Clipboard access was blocked by the browser.','error');}
+ };
+ if(kind==='library')return <div className="page-content activity-library">
+  <PageHeader title="Activity library" subtitle="Copy-ready ideas to help your community get talking, learning, and playing together."/>
+  <div className="activity-library-tools"><SearchInput value={query} onChange={setQuery} placeholder="Search activities…"/><div className="activity-library-categories" role="group" aria-label="Filter activities">{categories.map(item=><button key={item} className={category===item?'active':''} onClick={()=>setCategory(item)}>{item}</button>)}</div><span className="activity-result-count">{visible.length} activities</span></div>
+  {visible.length?<div className="activity-library-grid">{visible.map(item=><article className="activity-card" key={item.title}><div className="activity-card-meta"><span>{item.category}</span><span>READY TO USE</span></div><h2>{item.title}</h2><p>{item.description}</p><pre>{item.prompt}</pre><Button variant="secondary" onClick={()=>void copy(item.prompt)}><Copy size={15}/> Copy activity</Button></article>)}</div>:<EmptyState title="No activities found" description="Try a different search or category." action={<Button variant="secondary" onClick={()=>{setQuery('');setCategory('All');}}>Clear filters</Button>}/>}
+ </div>;
+ const config={premium:{title:'Relay Plus',subtitle:'Optional premium features are informational in this preview.',icon:Gift,cards:[['Expanded profile themes','More profile appearance choices.','Concept preview'],['Larger uploads','Higher attachment limits for hosted plans.','Not enabled'],['Community perks','Extra server customization options.','Not enabled']]},shop:{title:'Relay shop',subtitle:'A catalogue preview. No checkout or payment processing is connected.',icon:Gift,cards:[['Profile accent pack','Colour presets for your profile.','Preview only'],['Server icon collection','Original community icon concepts.','Preview only'],['Seasonal decorations','Small profile decoration concepts.','Preview only']]}}[kind];
+ const Icon=config.icon;
+ return <div className="page-content"><PageHeader title={config.title} subtitle={config.subtitle}/><div className="feature-grid">{config.cards.map(([title,desc,status])=><article className="feature-card" key={title}><div className="feature-icon"><Icon size={22}/></div><h3>{title}</h3><p>{desc}</p><span className="status-label">{status}</span></article>)}</div><div className="disclosure-note"><Lock size={16}/> This page is preview information only. No payments, purchases, or paid services are activated.</div></div>;
 }

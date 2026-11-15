@@ -17,6 +17,7 @@ import { Server as SocketServer } from 'socket.io';
 import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
+import { createMessageHistoryCursor } from './message-history.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 
 const app = express();
@@ -794,26 +795,18 @@ function messageRows(whereSql:string, params:any[], limit=60) {
       attachments:JSON.parse(m.attachments||'[]')
     }));
 }
-function messageHistoryCursor(req: Request) {
-  const before = String(req.query.before || '').slice(0, 80);
-  const beforeId = String(req.query.beforeId || '').slice(0, 128);
-  if (!before) return null;
-  // The ID tie-breaker prevents messages with the same creation time from being skipped.
-  return beforeId
-    ? { sql: '(m.created_at<? OR (m.created_at=? AND m.id<?))', params: [before, before, beforeId] }
-    : { sql: 'm.created_at<?', params: [before] };
-}
+// Message history cursor logic lives in message-history.ts and has focused tests.
 
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
   if(!canReadChannel(req.params.channelId,req.user!.id))return fail(res,403,'Channel membership required.');
-  const cursor = messageHistoryCursor(req);
+  const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.channel_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.channel_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.channelId, ...cursor.params] : [req.params.channelId];
   res.json({messages:messageRows(where,params)});
 });
 app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
-  const cursor = messageHistoryCursor(req);
+  const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
   res.json({messages:messageRows(where,params)});

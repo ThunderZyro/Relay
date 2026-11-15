@@ -22,6 +22,7 @@ import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 import { verifyStripeWebhookSignature } from './boost.js';
+import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,requiresBoostSettings} from './user-settings.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -367,31 +368,6 @@ function emitFriendUpdate(...userIds: string[]) {
 }
 
 
-const DEFAULT_USER_SETTINGS = {
-  theme:'graphite',density:'comfortable',messageLayout:'cozy',fontScale:100,reducedMotion:false,contrast:'normal',
-  quietMode:false,dmNotifications:true,mentionNotifications:true,browserNotifications:false,
-  keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'},
-  voiceInputDeviceId:'',voiceOutputDeviceId:'',sidebarWidth:292,messageRadius:12,fontFamily:'system',
-  customTheme:{bg:'#19211d',panel:'#202b25',panel2:'#29372f',panel3:'#34443a',line:'#405247',lineStrong:'#5e7668',muted:'#a8b8ac',text:'#edf4ee',accent:'#82a594',accentHover:'#9bbbac',accentSoft:'#31493e',buttonText:'#14221b'}
-};
-const customThemeColorsSchema=z.object({
-  bg:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),panel:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  panel2:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),panel3:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  line:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),lineStrong:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  muted:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),text:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  accent:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),accentHover:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  accentSoft:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),buttonText:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
-}).strict();
-const userSettingsPatchSchema=z.object({
-  theme:z.enum(['graphite','slate','warm','light','custom']).optional(),
-  density:z.enum(['comfortable','compact']).optional(),messageLayout:z.enum(['cozy','compact']).optional(),
-  fontScale:z.number().int().min(85).max(125).optional(),reducedMotion:z.boolean().optional(),contrast:z.enum(['normal','high']).optional(),
-  quietMode:z.boolean().optional(),dmNotifications:z.boolean().optional(),mentionNotifications:z.boolean().optional(),browserNotifications:z.boolean().optional(),
-  keybinds:z.object({focusSearch:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional(),toggleMembers:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional()}).partial().optional(),
-  voiceInputDeviceId:z.string().max(256).optional(),voiceOutputDeviceId:z.string().max(256).optional(),
-  customTheme:customThemeColorsSchema.optional(),sidebarWidth:z.number().int().min(250).max(380).optional(),
-  messageRadius:z.number().int().min(6).max(24).optional(),fontFamily:z.enum(['system','serif','mono']).optional()
-}).strict();
 function getBoostSnapshot(userId:string){
   const row=db.prepare('SELECT status,current_period_end FROM user_boosts WHERE user_id=?').get(userId) as any;
   const end=row?.current_period_end?new Date(row.current_period_end).getTime():null;
@@ -596,15 +572,18 @@ app.put('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   const incoming=userSettingsPatchSchema.safeParse(req.body?.settings);
   if(!incoming.success)return fail(res,400,'One or more settings are invalid. Check the selected values and try again.');
   const boost=getBoostSnapshot(req.user!.id);
-  const advancedKeys=['customTheme','sidebarWidth','messageRadius','fontFamily'];
-  if(!boost.active&&(incoming.data.theme==='custom'||advancedKeys.some(key=>Object.prototype.hasOwnProperty.call(incoming.data,key))))
+  if(!boost.active&&requiresBoostSettings(incoming.data))
     return fail(res,403,'Relay Boost is required for custom themes and advanced appearance controls.');
-  const current=db.prepare('SELECT data FROM settings WHERE user_id=?').get(req.user!.id) as any;
-  const previous=JSON.parse(current?.data||'{}');
-  const data={...DEFAULT_USER_SETTINGS,...previous,...incoming.data,
-    keybinds:{...DEFAULT_USER_SETTINGS.keybinds,...(previous.keybinds||{}),...(incoming.data.keybinds||{})},
-    customTheme:{...DEFAULT_USER_SETTINGS.customTheme,...(previous.customTheme||{}),...(incoming.data.customTheme||{})}};
-  db.prepare(`INSERT INTO settings(user_id,data,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`).run(req.user!.id,JSON.stringify(data),now());
+  const data=db.transaction(()=>{
+    // Serialize patches per account across all Relay instances so quick control
+    // changes cannot overwrite one another when requests arrive together.
+    db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(req.user!.id);
+    const current=db.prepare('SELECT data FROM settings WHERE user_id=?').get(req.user!.id) as any;
+    const previous=JSON.parse(current?.data||'{}');
+    const merged=mergeUserSettings(DEFAULT_USER_SETTINGS,previous,incoming.data);
+    db.prepare(`INSERT INTO settings(user_id,data,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`).run(req.user!.id,JSON.stringify(merged),now());
+    return merged;
+  })();
   res.json({settings:data,boost});
 });
 app.post('/api/boost/checkout', requireAuth, interactionLimiter, asyncRoute(async (req:AuthedRequest,res) => {

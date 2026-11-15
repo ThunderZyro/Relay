@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
-import { ArrowLeft, Bell, Camera, Check, FilePlus2, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
 import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
@@ -257,9 +257,12 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
  return {messages,setMessages,loading,hasOlder,loadingOlder,loadOlder,typing,socket,add,reload:load};
 }
 function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
- const toast=useToast();const {user}=useAuth();
+ const toast=useToast();const {user}=useAuth();const [bookmarked,setBookmarked]=useState<boolean|null>(null);
+ useEffect(()=>{let active=true;api<{bookmarked:boolean}>(`/messages/${message.id}/bookmark`).then(result=>{if(active)setBookmarked(result.bookmarked);}).catch(error=>{if(active)toast.show(error.message,'error');}).finally(()=>{if(active&&bookmarked===null)setBookmarked(false);});return()=>{active=false;};},[message.id]);
+ const toggleBookmark=async()=>{try{if(bookmarked){await del(`/messages/${message.id}/bookmark`);setBookmarked(false);toast.show('Removed from saved messages.','success');}else{await post(`/messages/${message.id}/bookmark`);setBookmarked(true);toast.show('Message saved.','success');}}catch(error:any){toast.show(error.message,'error');}};
  return <Modal title="Message actions" onClose={onClose}><div className="form-stack">
   <Button variant="secondary" onClick={async()=>{try{await post(`/messages/${message.id}/reactions`,{emoji:'👍'});toast.show('Reaction added.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Add 👍 reaction</Button>
+  <Button variant="secondary" disabled={bookmarked===null} onClick={()=>void toggleBookmark()}><Bookmark size={15}/>{bookmarked===null?'Checking saved status…':bookmarked?'Remove saved message':'Save message'}</Button>
   {!isDm&&<Button variant="secondary" onClick={async()=>{try{const r=await post<{pinned:boolean}>(`/messages/${message.id}/pin`);toast.show(r.pinned?'Message pinned.':'Message unpinned.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Pin or unpin</Button>}
   {!isDm&&<Button variant="secondary" onClick={async()=>{const reason=window.prompt('Why are you reporting this message?');if(!reason)return;try{await post(`/messages/${message.id}/report`,{reason});toast.show('Report submitted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Report message</Button>}
   {message.sender_id===user?.id&&<Button variant="danger" onClick={async()=>{if(!window.confirm('Delete this message?'))return;try{await del(`/messages/${message.id}`);toast.show('Message deleted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Delete message</Button>}

@@ -892,6 +892,17 @@ function markMessagesRead(messages:any[], userId:string, room:string, username:s
   })();
   io.to(room).emit('message:read',{userId,username,messageIds:unread.map(message=>message.id),readAt});
 }
+function markDmConversationRead(dmId:string,userId:string,room:string,username:string) {
+  const unread=db.prepare(`SELECT m.id FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id=?)`).all(dmId,userId,userId) as Array<{id:string}>;
+  if(!unread.length)return;
+  const readAt=now();
+  db.transaction(()=>{
+    const insert=db.prepare('INSERT INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?) ON CONFLICT(message_id,user_id) DO NOTHING');
+    unread.forEach(message=>insert.run(message.id,userId,readAt));
+  })();
+  io.to(room).emit('message:read',{userId,username,messageIds:unread.map(message=>message.id),readAt});
+}
 function sharedAttachments(whereSql:string,params:any[]) {
   return db.prepare(`SELECT a.id,a.filename,a.mime,a.size,m.created_at,u.username
     FROM attachments a JOIN messages m ON m.id=a.message_id JOIN users u ON u.id=m.sender_id
@@ -921,8 +932,7 @@ app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
-  const messages=messageRows(where,params);
-  markMessagesRead(messages,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
+  markDmConversationRead(req.params.dmId,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
   res.json({messages:messageRows(where,params)});
 });
 app.get('/api/dms/:dmId/messages/search', requireAuth, (req: AuthedRequest,res) => {

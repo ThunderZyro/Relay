@@ -70,7 +70,7 @@ export default function Shell(){
          {filteredDms.slice(0,60).map(dm=>{const others=dm.members.filter(m=>m.id!==user?.id);const other=others[0];const label=dm.name||others.map(m=>m.username).join(', ');const group=!!dm.is_group||others.length>1;return <Link key={dm.id} to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`} onClick={()=>setMobileNav(false)}>
            <span className="dm-avatar-wrap"><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="md" presence={!group?other?.presence:undefined}/>{group&&<i>{others.length+1}</i>}</span>
            <span className="dm-item-copy"><b>{label}</b><small>{typeof dm.last_message==='string'&&dm.last_message.trim()?dm.last_message:group?'Group conversation':'Open conversation'}</small></span>
-           <span className="dm-item-meta">{group&&<UsersRound size={12}/ >}{Number(dm.unread_count||0)>0&&<i className="dm-unread-count">{Number(dm.unread_count)>99?'99+':dm.unread_count}</i>}</span>
+           <span className="dm-item-meta">{group&&<UsersRound size={12}/>}{Number(dm.unread_count||0)>0&&<i className="dm-unread-count">{Number(dm.unread_count)>99?'99+':dm.unread_count}</i>}</span>
          </Link>;})}
          {!filteredDms.length&&<div className="dm-empty">{dmQuery?'No chats match that search.':dmScope==='groups'?'No group conversations yet.':dmScope==='online'?'No conversations with someone online.':'Your conversations will appear here.'}</div>}
        </div>

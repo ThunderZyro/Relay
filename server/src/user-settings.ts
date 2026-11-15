@@ -15,12 +15,22 @@ const customThemeColorsSchema=z.object({
   accent:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),accentHover:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   accentSoft:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),buttonText:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
 }).strict();
+function isValidShortcut(value:string){
+ const parts=value.toLowerCase().split('+');
+ if(parts.length<2||parts.some(part=>!part))return false;
+ const modifiers=new Set(['ctrl','control','meta','cmd','command','shift','alt']);
+ const key=parts[parts.length-1];
+ if(modifiers.has(key)||!parts.slice(0,-1).every(part=>modifiers.has(part)))return false;
+ const canonical=parts.slice(0,-1).map(part=>part==='control'?'ctrl':(part==='cmd'||part==='command')?'meta':part);
+ return new Set(canonical).size===canonical.length;
+}
+
 export const userSettingsPatchSchema=z.object({
   theme:z.enum(['graphite','slate','warm','light','custom']).optional(),
   density:z.enum(['comfortable','compact']).optional(),messageLayout:z.enum(['cozy','compact']).optional(),
   fontScale:z.number().int().min(85).max(125).optional(),reducedMotion:z.boolean().optional(),contrast:z.enum(['normal','high']).optional(),
   quietMode:z.boolean().optional(),dmNotifications:z.boolean().optional(),mentionNotifications:z.boolean().optional(),browserNotifications:z.boolean().optional(),
-  keybinds:z.object({focusSearch:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional(),toggleMembers:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional()}).partial().optional(),
+  keybinds:z.object({focusSearch:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).refine(isValidShortcut,'Enter a shortcut with modifiers and one final key.').optional(),toggleMembers:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional()}).partial().optional(),
   voiceInputDeviceId:z.string().max(256).optional(),voiceOutputDeviceId:z.string().max(256).optional(),
   customTheme:customThemeColorsSchema.optional(),sidebarWidth:z.number().int().min(250).max(380).optional(),
   messageRadius:z.number().int().min(6).max(24).optional(),fontFamily:z.enum(['system','serif','mono']).optional()

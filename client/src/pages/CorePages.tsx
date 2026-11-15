@@ -1,6 +1,6 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {Link,useNavigate,useParams,useLocation} from 'react-router-dom';
-import {Activity,ArrowRight,CalendarDays,Check,Compass,Globe,MessageCircle,Plus,Search,Shield,Ban,UserPlus,Users,X,Clock,BookOpen,Gift,ExternalLink,Lock,Camera,Save,Mail,Monitor,Volume2,Mic,Eye,Trash2,RefreshCw,Copy,Settings,Hash,VolumeX,ChevronRight} from 'lucide-react';
+import {Activity,ArrowRight,Bookmark,CalendarDays,Check,Compass,Globe,MessageCircle,Plus,Search,Shield,Ban,UserPlus,Users,X,Clock,BookOpen,Gift,ExternalLink,Lock,Camera,Save,Mail,Monitor,Volume2,Mic,Eye,Trash2,RefreshCw,Copy,Settings,Hash,VolumeX,ChevronRight} from 'lucide-react';
 import {api,post,patch,put,del} from '../api';
 import {useAuth,useToast} from '../state';
 import {Avatar,Button,EmptyState,Field,Loading,Modal,PageHeader,SearchInput} from '../components/ui';
@@ -157,6 +157,30 @@ export function EventsPage(){
  return <div className="page-content"><PageHeader title="Events" subtitle="See what your communities have planned." actions={<Button onClick={openCreate} disabled={!servers.length}><Plus size={16}/> Create event</Button>}/>
  {loading?<Loading/>:events.length?<div className="event-list">{events.map(event=><article className="event-card" key={event.id}><div className="event-date"><b>{new Date(event.starts_at).toLocaleDateString([], {day:'2-digit'})}</b><span>{new Date(event.starts_at).toLocaleDateString([], {month:'short'})}</span></div><div className="event-content"><span className="eyebrow">{event.server_name}</span><h3>{event.title}</h3><p>{event.description||'Community event'}</p><div className="event-meta"><span><Clock size={14}/>{new Date(event.starts_at).toLocaleString()}</span><span><Users size={14}/>{event.going_count} going</span>{event.location&&<span>{event.location}</span>}</div></div><div className="event-actions">{event.my_rsvp?<Button variant="secondary" onClick={()=>void cancelRsvp(event)}>{event.my_rsvp==='going'?'Going':'Interested'} · Cancel</Button>:<><Button onClick={()=>void rsvp(event,'going')}>I'm going</Button><Button variant="ghost" onClick={()=>void rsvp(event,'interested')}>Interested</Button></>}{event.creator_id===user?.id&&<><Button variant="ghost" onClick={()=>openEdit(event)}>Edit</Button><Button variant="danger" onClick={()=>void deleteEvent(event)}>Cancel event</Button></>}</div></article>)}</div>:<EmptyState title="No upcoming events" description="Create an event in one of your servers and invite the community." icon={CalendarDays}/>}
  {modalOpen&&<Modal title={editing?'Edit event':'Create an event'} onClose={()=>{setModalOpen(false);setEditing(null);}}><form className="form-stack" onSubmit={submit}>{!editing&&<Field label="Server"><select value={form.serverId} onChange={e=>setForm({...form,serverId:e.target.value})} required>{servers.map((server:any)=><option value={server.id} key={server.id}>{server.name}</option>)}</select></Field>}<Field label="Event name"><input value={form.title} onChange={e=>setForm({...form,title:e.target.value})} maxLength={100} minLength={2} required/></Field><Field label="Description"><textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})} maxLength={1000}/></Field><Field label="Date and time"><input type="datetime-local" value={form.starts_at} onChange={e=>setForm({...form,starts_at:e.target.value})} required/></Field><Field label="Location or voice channel"><input value={form.location} onChange={e=>setForm({...form,location:e.target.value})} maxLength={120}/></Field><div className="modal-actions"><Button variant="secondary" onClick={()=>{setModalOpen(false);setEditing(null);}}>Cancel</Button><Button type="submit" disabled={saving}>{saving?'Saving…':editing?'Save changes':'Create event'}</Button></div></form></Modal>}
+ </div>;
+}
+
+export function BookmarksPage(){
+ const navigate=useNavigate();const toast=useToast();const [bookmarks,setBookmarks]=useState<any[]>([]);const [loading,setLoading]=useState(true);
+ useEffect(()=>{let active=true;api<{bookmarks:any[]}>('/bookmarks').then(result=>{if(active)setBookmarks(result.bookmarks||[]);}).catch(error=>{if(active)toast.show(error.message,'error');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[]);
+ const remove=async(item:any)=>{try{await del(`/messages/${item.id}/bookmark`);setBookmarks(current=>current.filter(saved=>saved.id!==item.id));toast.show('Message removed from saved items.','success');}catch(error:any){toast.show(error.message,'error');}};
+ return <div className="page-content">
+  <PageHeader title="Saved messages" subtitle="Keep important messages from your direct chats and communities in one place."/>
+  <div className="settings-card">
+   <h3>Saved items · {bookmarks.length}</h3>
+   {loading?<Loading label="Loading saved messages"/>:bookmarks.length?<div className="saved-message-list">{bookmarks.map(item=><article className="report-row" key={item.id}>
+    <div className="saved-message-copy">
+     <span className="eyebrow">{item.source_label}</span>
+     <p>{item.content||'Attachment'}</p>
+     {!!item.attachments?.length&&<small>Attachments: {item.attachments.map((file:any)=>file.filename).join(', ')}</small>}
+     <small>Saved {new Date(item.saved_at).toLocaleString()} · Sent by {item.username}</small>
+    </div>
+    <div className="event-actions">
+     <Button variant="secondary" onClick={()=>navigate(item.href)}>Open conversation</Button>
+     <Button variant="danger" onClick={()=>void remove(item)}>Remove</Button>
+    </div>
+   </article>)}</div>:<EmptyState title="No saved messages yet" description="Open a message’s actions and choose “Save message” to keep it here." icon={Bookmark}/>}
+  </div>
  </div>;
 }
 

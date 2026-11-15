@@ -18,8 +18,8 @@ export function applyRelayAppearance(settings:Record<string,any>={},boostActive=
   else root.style.removeProperty(property);
  }
  const fontScale=Number(settings.fontScale);root.style.setProperty('--font-scale',`${Number.isFinite(fontScale)?Math.min(125,Math.max(85,fontScale)):100}%`);
- const sidebarWidth=Number(settings.sidebarWidth);root.style.setProperty('--custom-sidebar-width',`${Number.isFinite(sidebarWidth)?Math.min(380,Math.max(250,sidebarWidth)):292}px`);
- const radius=Number(settings.messageRadius);root.style.setProperty('--custom-message-radius',`${Number.isFinite(radius)?Math.min(24,Math.max(6,radius)):12}px`);
+ const sidebarWidth=boostActive?Number(settings.sidebarWidth):292;root.style.setProperty('--custom-sidebar-width',`${Number.isFinite(sidebarWidth)?Math.min(380,Math.max(250,sidebarWidth)):292}px`);
+ const radius=boostActive?Number(settings.messageRadius):12;root.style.setProperty('--custom-message-radius',`${Number.isFinite(radius)?Math.min(24,Math.max(6,radius)):12}px`);
  const fonts:Record<string,string>={system:'Inter,ui-sans-serif,system-ui,sans-serif',serif:'Georgia,"Times New Roman",serif',mono:'"SFMono-Regular",Consolas,"Liberation Mono",monospace'};
- root.style.setProperty('--relay-font-family',fonts[settings.fontFamily]||fonts.system);
+ root.style.setProperty('--relay-font-family',boostActive?(fonts[settings.fontFamily]||fonts.system):fonts.system);
 }

@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {Link,Outlet,useLocation,useNavigate} from 'react-router-dom';
 import {io} from 'socket.io-client';
-import {Activity, Bell, CalendarDays, Compass, Download, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, Plus, Search, Settings, Shield, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus, ChevronDown} from 'lucide-react';
+import {Activity, Bell, Bookmark, CalendarDays, Compass, Download, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, Plus, Search, Settings, Shield, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus, ChevronDown} from 'lucide-react';
 import {api,apiOrigin,post,del} from '../api';
 import {useAuth,useToast,announceAuthChange} from '../state';
 import {Avatar,Button,Field,Modal,SearchInput} from './ui';
@@ -105,6 +105,7 @@ export default function Shell(){
          <div className="side-more-links">
            <Link to="/events"><CalendarDays size={15}/> Events</Link>
            <Link to="/inbox"><Bell size={15}/> Inbox</Link>
+           <Link to="/bookmarks"><Bookmark size={15}/> Saved messages</Link>
            <Link to="/library"><Library size={15}/> Library</Link>
          </div>
        </details>

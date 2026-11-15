@@ -6,7 +6,19 @@ import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
 
-type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[] };
+type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; channel_id?:string|null; dm_id?:string|null };
+
+function compareMessages(a: ChatMessage, b: ChatMessage) {
+ const timeDifference = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+ return timeDifference || a.id.localeCompare(b.id);
+}
+
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+ 'image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain',
+ 'application/zip','audio/mpeg','audio/ogg','video/mp4'
+]);
+const BLOCKED_ATTACHMENT_EXTENSIONS = new Set(['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1']);
 type RoomServer = { server:{id:string;name:string;description?:string}; channels:any[]; members:any[]; categories:any[] };
 
 function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=false, onLoadOlder, currentUserId, onReply, onEdit, onMore, onReact }: {
@@ -49,7 +61,21 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
   {reply&&<div className="reply-banner"><Reply size={13}/> Replying to {reply.username}: {reply.content.slice(0,90)}<button onClick={clearReply} aria-label="Cancel reply"><X size={13}/></button></div>}
   {files.length>0&&<div className="file-chips">{files.map((f,i)=><span key={`${f.name}-${i}`}>{f.name}<button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}><X size={12}/></button></span>)}</div>}
   <form className="composer" onSubmit={send}>
-   <input ref={fileRef} type="file" multiple hidden onChange={e=>{setFiles(v=>[...v,...Array.from(e.target.files||[])].slice(0,8));e.currentTarget.value='';}}/>
+   <input ref={fileRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,application/zip,audio/mpeg,audio/ogg,video/mp4" onChange={e=>{
+    const incoming = Array.from(e.currentTarget.files || []);
+    const accepted = incoming.filter(file => {
+     const dot = file.name.lastIndexOf('.');
+     const extension = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
+     return file.size <= MAX_UPLOAD_BYTES && ALLOWED_ATTACHMENT_TYPES.has(file.type) && !BLOCKED_ATTACHMENT_EXTENSIONS.has(extension);
+    });
+    const rejectedCount = incoming.length - accepted.length;
+    const remainingSlots = Math.max(0, 8 - files.length);
+    const added = accepted.slice(0, remainingSlots);
+    if (rejectedCount) toast.show('Some files were skipped. Use supported file types up to 10 MB each.','error');
+    if (added.length < accepted.length) toast.show('A message can contain up to 8 files.','info');
+    setFiles(current => [...current, ...added]);
+    e.currentTarget.value = '';
+   }}/>
    <button className="composer-icon" type="button" title="Attach file" onClick={()=>fileRef.current?.click()}><Paperclip size={18}/></button>
    <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message…" maxLength={4000}/>
    <button className="composer-send" type="submit" disabled={busy||(!content.trim()&&!files.length)} title="Send"><Send size={16}/></button>
@@ -58,17 +84,145 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
 }
 
 function useRoomMessages(id:string|undefined,isDm:boolean){
- const [messages,setMessages]=useState<ChatMessage[]>([]);const [loading,setLoading]=useState(true);const [hasOlder,setHasOlder]=useState(false);const [loadingOlder,setLoadingOlder]=useState(false);const [socket,setSocket]=useState<Socket|null>(null);const [typing,setTyping]=useState('');const toast=useToast();const typingTimer=useRef<number|undefined>(undefined);
- const route=isDm?`/dms/${id}/messages`:`/channels/${id}/messages`;
- const load=async()=>{if(!id){setMessages([]);setLoading(false);return;}setLoading(true);try{const r=await api<{messages:ChatMessage[]}>(route);setMessages(r.messages||[]);setHasOlder((r.messages||[]).length===60);}catch(e:any){toast.show(e.message,'error');setMessages([]);}finally{setLoading(false);}};
- const refreshLatest=async()=>{if(!id)return;try{const r=await api<{messages:ChatMessage[]}>(route);const latest=r.messages||[];const latestIds=new Set(latest.map(message=>message.id));const oldestLatest=latest.length?new Date(latest[0].created_at).getTime():0;setMessages(current=>{const merged=new Map(current.map(message=>[message.id,message]));for(const message of latest)merged.set(message.id,message);if(latest.length<60)return latest;for(const message of current){if(new Date(message.created_at).getTime()>=oldestLatest&&!latestIds.has(message.id))merged.delete(message.id);}return [...merged.values()].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime());});if(latest.length===60)setHasOlder(true);}catch{/* Socket reconnect/polling is best-effort; the next cycle retries. */}};
- useEffect(()=>{void load();},[id,isDm]);
- useEffect(()=>{if(!id){setSocket(null);return;}const live:Socket=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});setSocket(live);const event=isDm?'room:join-dm':'room:join-channel';live.on('connect',()=>{live.emit(event,id);void refreshLatest();});live.on('message:new',(m:ChatMessage)=>setMessages(v=>v.some(x=>x.id===m.id)?v:[...v,m].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime())));live.on('message:updated',(m:ChatMessage)=>setMessages(v=>v.map(x=>x.id===m.id?m:x)));live.on('message:deleted',(m:{id:string})=>setMessages(v=>v.filter(x=>x.id!==m.id)));live.on('message:reactions',(r:{messageId:string;reactions:ChatMessage['reactions']})=>setMessages(v=>v.map(x=>x.id===r.messageId?{...x,reactions:r.reactions}:x)));live.on('typing',(t:any)=>{if(typingTimer.current)window.clearTimeout(typingTimer.current);setTyping(t.active?`${t.username} is typing…`: '');if(t.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);});const syncTimer=window.setInterval(()=>void refreshLatest(),15000);return()=>{window.clearInterval(syncTimer);live.disconnect();if(typingTimer.current)window.clearTimeout(typingTimer.current);setSocket(current=>current===live?null:current);setTyping('');};},[id,isDm]);
- const loadOlder=async()=>{if(!id||!hasOlder||loadingOlder||!messages.length)return;setLoadingOlder(true);try{const route=isDm?'/dms/'+id+'/messages':'/channels/'+id+'/messages';const older=(await api<{messages:ChatMessage[]}>(route+'?before='+encodeURIComponent(messages[0].created_at))).messages||[];setMessages(current=>[...older.filter(m=>!current.some(existing=>existing.id===m.id)),...current]);setHasOlder(older.length===60);}catch(e:any){toast.show(e.message,'error');}finally{setLoadingOlder(false);}};
- const add=(message:ChatMessage)=>setMessages(v=>v.some(m=>m.id===message.id)?v:[...v,message]);
+ const [messages,setMessages]=useState<ChatMessage[]>([]);
+ const [loading,setLoading]=useState(true);
+ const [hasOlder,setHasOlder]=useState(false);
+ const [loadingOlder,setLoadingOlder]=useState(false);
+ const [socket,setSocket]=useState<Socket|null>(null);
+ const [typing,setTyping]=useState('');
+ const toast=useToast();
+ const typingTimer=useRef<number|undefined>(undefined);
+ const requestGeneration=useRef(0);
+ const route=isDm? `/dms/${id}/messages` : `/channels/${id}/messages`;
+
+ const load=async(generation=requestGeneration.current)=>{
+  if(!id){
+   if(generation===requestGeneration.current){setMessages([]);setHasOlder(false);setLoading(false);}
+   return;
+  }
+  setMessages([]);
+  setHasOlder(false);
+  setLoading(true);
+  try{
+   const response=await api<{messages:ChatMessage[]}>(route);
+   if(generation!==requestGeneration.current)return;
+   const next=response.messages||[];
+   setMessages([...next].sort(compareMessages));
+   setHasOlder(next.length===60);
+  }catch(error:any){
+   if(generation!==requestGeneration.current)return;
+   toast.show(error.message,'error');
+   setMessages([]);
+  }finally{
+   if(generation===requestGeneration.current)setLoading(false);
+  }
+ };
+
+ const refreshLatest=async()=>{
+  if(!id)return;
+  const generation=requestGeneration.current;
+  try{
+   const response=await api<{messages:ChatMessage[]}>(route);
+   if(generation!==requestGeneration.current)return;
+   const latest=response.messages||[];
+   const latestIds=new Set(latest.map(message=>message.id));
+   const oldestLatest=latest[0];
+   setMessages(current=>{
+    const merged=new Map(current.map(message=>[message.id,message]));
+    for(const message of latest)merged.set(message.id,message);
+    if(latest.length<60)return [...latest].sort(compareMessages);
+    if(oldestLatest){
+     for(const message of current){
+      if(compareMessages(message,oldestLatest)>=0&&!latestIds.has(message.id))merged.delete(message.id);
+     }
+    }
+    return [...merged.values()].sort(compareMessages);
+   });
+   if(latest.length===60)setHasOlder(true);
+  }catch{
+   // Realtime polling is best-effort; a later cycle retries.
+  }
+ };
+
+ useEffect(()=>{
+  const generation=++requestGeneration.current;
+  void load(generation);
+  return()=>{
+   if(requestGeneration.current===generation)requestGeneration.current+=1;
+  };
+ },[id,isDm]);
+
+ useEffect(()=>{
+  if(!id){setSocket(null);return;}
+  const generation=requestGeneration.current;
+  const isCurrentRoom=()=>generation===requestGeneration.current;
+  const live:Socket=io(apiOrigin,{
+   withCredentials:true,
+   transports:['websocket'],
+   reconnection:true,
+   reconnectionDelay:500,
+   reconnectionDelayMax:5000
+  });
+  setSocket(live);
+  const joinEvent=isDm?'room:join-dm':'room:join-channel';
+  live.on('connect',()=>{
+   if(!isCurrentRoom())return;
+   live.emit(joinEvent,id);
+   void refreshLatest();
+  });
+  live.on('message:new',(message:ChatMessage)=>{
+   if(!isCurrentRoom())return;
+   setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));
+  });
+  live.on('message:updated',(message:ChatMessage)=>{
+   if(isCurrentRoom())setMessages(current=>current.map(item=>item.id===message.id?message:item).sort(compareMessages));
+  });
+  live.on('message:deleted',(message:{id:string})=>{
+   if(isCurrentRoom())setMessages(current=>current.filter(item=>item.id!==message.id));
+  });
+  live.on('message:reactions',(update:{messageId:string;reactions:ChatMessage['reactions']})=>{
+   if(isCurrentRoom())setMessages(current=>current.map(item=>item.id===update.messageId?{...item,reactions:update.reactions}:item));
+  });
+  live.on('typing',(event:any)=>{
+   if(!isCurrentRoom())return;
+   if(typingTimer.current)window.clearTimeout(typingTimer.current);
+   setTyping(event.active?`${event.username} is typing…`:'');
+   if(event.active)typingTimer.current=window.setTimeout(()=>setTyping(''),5000);
+  });
+  const syncTimer=window.setInterval(()=>{if(isCurrentRoom())void refreshLatest();},15000);
+  return()=>{
+   window.clearInterval(syncTimer);
+   live.disconnect();
+   if(typingTimer.current)window.clearTimeout(typingTimer.current);
+   setSocket(current=>current===live?null:current);
+   setTyping('');
+  };
+ },[id,isDm]);
+
+ const loadOlder=async()=>{
+  if(!id||!hasOlder||loadingOlder||!messages.length)return;
+  const generation=requestGeneration.current;
+  const oldest=messages[0];
+  setLoadingOlder(true);
+  try{
+   const cursor=`?before=${encodeURIComponent(oldest.created_at)}&beforeId=${encodeURIComponent(oldest.id)}`;
+   const older=(await api<{messages:ChatMessage[]}>(route+cursor)).messages||[];
+   if(generation!==requestGeneration.current)return;
+   setMessages(current=>[...older.filter(message=>!current.some(existing=>existing.id===message.id)),...current].sort(compareMessages));
+   setHasOlder(older.length===60);
+  }catch(error:any){
+   if(generation===requestGeneration.current)toast.show(error.message,'error');
+  }finally{
+   if(generation===requestGeneration.current)setLoadingOlder(false);
+  }
+ };
+ const add=(message:ChatMessage)=>{
+  const belongsToRoom=isDm?message.dm_id===id:message.channel_id===id;
+  if(!belongsToRoom)return;
+  setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));
+ };
  return {messages,setMessages,loading,hasOlder,loadingOlder,loadOlder,typing,socket,add,reload:load};
 }
-
 function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
  const toast=useToast();const {user}=useAuth();
  return <Modal title="Message actions" onClose={onClose}><div className="form-stack">

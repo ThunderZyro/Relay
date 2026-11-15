@@ -353,7 +353,7 @@ app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
   const saved=db.prepare('SELECT * FROM users WHERE id=?').get(userId) as any; res.status(201).json({ user:{...userPublic(saved),email:saved.email} });
 }));
 app.post('/api/auth/login', authLimiter, asyncRoute(async (req,res) => {
-  const parsed = z.object({ login:z.string().min(1).max(254), password:z.string().min(1).max(128) }).safeParse(req.body);
+  const parsed = z.object({ login:z.string().min(1).max(254), password:z.string().min(1).max(128).refine(passwordWithinBcryptLimit,'Password input must be no more than 72 UTF-8 bytes.') }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,'Enter your email or username and password.');
   const row = db.prepare('SELECT * FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(parsed.data.login,parsed.data.login) as any;
   if (!row || !(await bcrypt.compare(parsed.data.password,row.password_hash))) return fail(res,401,'Those sign-in details do not match.');
@@ -449,7 +449,7 @@ app.delete('/api/sessions/:sessionId', requireAuth, (req: AuthedRequest,res) => 
   res.json({ok:true});
 });
 app.put('/api/account/password', requireAuth, asyncRoute(async (req,res) => {
-  const p=z.object({currentPassword:z.string().min(1).max(128),newPassword:z.string().min(10).max(128).refine(passwordWithinBcryptLimit,'Password must be no more than 72 UTF-8 bytes.')}).safeParse(req.body);
+  const p=z.object({currentPassword:z.string().min(1).max(128).refine(passwordWithinBcryptLimit,'Password input must be no more than 72 UTF-8 bytes.'),newPassword:z.string().min(10).max(128).refine(passwordWithinBcryptLimit,'Password must be no more than 72 UTF-8 bytes.')}).safeParse(req.body);
   if(!p.success)return fail(res,400,'New password must be at least 10 characters.');
   const row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.user!.id) as any;
   if(!row || !(await bcrypt.compare(p.data.currentPassword,row.password_hash)))return fail(res,403,'Current password is incorrect.');
@@ -1151,12 +1151,13 @@ io.on('connection',(socket)=>{
   const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
   // Send a rotation notice first. Clients reconnect only for this planned
   // disconnect; expired/revoked sessions do not send the notice.
+  let rotationDisconnectTimer:NodeJS.Timeout|undefined;
   const functionLifetimeTimer=(process.env.VERCEL==='1'||!!process.env.VERCEL_ENV)
-    ? setTimeout(()=>{socket.emit('relay:rotate');setTimeout(()=>socket.disconnect(true),250);},4*60*1000-250)
+    ? setTimeout(()=>{socket.emit('relay:rotate');rotationDisconnectTimer=setTimeout(()=>socket.disconnect(true),250);},4*60*1000-250)
     : undefined;
   sessionExpiryTimer.unref();
   functionLifetimeTimer?.unref();
-  socket.once('disconnect',()=>{clearTimeout(sessionExpiryTimer);if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);});
+  socket.once('disconnect',()=>{clearTimeout(sessionExpiryTimer);if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);if(rotationDisconnectTimer)clearTimeout(rotationDisconnectTimer);});
   socket.use((_packet,next)=>{
     const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
     if(!active){socket.disconnect(true);return;}

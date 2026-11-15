@@ -174,6 +174,11 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
    live.emit(joinEvent,id);
    void refreshLatest();
   });
+  live.on('friends:updated',()=>{
+   if(!isCurrentRoom())return;
+   if(isDm)live.emit(joinEvent,id);
+   void refreshLatest();
+  });
   live.on('message:new',(message:ChatMessage)=>{
    if(!isCurrentRoom())return;
    setMessages(current=>current.some(item=>item.id===message.id)?current:[...current,message].sort(compareMessages));

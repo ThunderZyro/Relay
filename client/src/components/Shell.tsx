@@ -9,7 +9,7 @@ import {hasRelayInstallPrompt,promptRelayInstall} from '../pwa';
 import {applyRelayAppearance} from '../theme';
 
 type Server={id:string;name:string;description:string;icon?:string|null;role_name?:string};
-type Dm={id:string;name?:string|null;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string;is_group?:boolean;unread_count?:number;is_pinned?:boolean;is_archived?:boolean;is_muted?:boolean;is_favorite?:boolean};
+type Dm={id:string;name?:string|null;last_message_at?:string|null;created_at?:string;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string;is_group?:boolean;unread_count?:number;is_pinned?:boolean;is_archived?:boolean;is_muted?:boolean;is_favorite?:boolean};
 export default function Shell(){
  const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const location=useLocation();
  const [servers,setServers]=useState<Server[]>([]);const [dms,setDms]=useState<Dm[]>([]);const [notifications,setNotifications]=useState<any[]>([]);const [searchOpen,setSearchOpen]=useState(false);const [search,setSearch]=useState('');const [searchResults,setSearchResults]=useState<any>(null);const [notifyOpen,setNotifyOpen]=useState(false);const [createOpen,setCreateOpen]=useState(false);const [serverName,setServerName]=useState('');const [serverDescription,setServerDescription]=useState('');const [mobileNav,setMobileNav]=useState(false);const [dmQuery,setDmQuery]=useState('');const [dmScope,setDmScope]=useState<'all'|'unread'|'groups'|'online'|'favorites'|'archived'>('all');const [keybinds,setKeybinds]=useState({focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'});const [installAvailable,setInstallAvailable]=useState(hasRelayInstallPrompt());
@@ -48,7 +48,7 @@ export default function Shell(){
   window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
  },[keybinds]);
  useEffect(()=>{const query=search.trim();if(query.length<2){setSearchResults(null);return;}let active=true;setSearchResults(null);const timer=window.setTimeout(()=>api(`/search?q=${encodeURIComponent(query)}`).then(result=>{if(active)setSearchResults(result);}).catch(()=>{if(active)setSearchResults(null);}),250);return()=>{active=false;window.clearTimeout(timer);};},[search]);
- const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Plus';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname.includes('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
+ const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Plus';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname==='/channels/@me'||location.pathname.startsWith('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
  const createServer=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await post<{server:Server;channelId:string}>('/servers',{name:serverName,description:serverDescription});setCreateOpen(false);setServerName('');setServerDescription('');await load();navigate(`/channels/${r.server.id}/${r.channelId}`);toast.show('Your club is ready.','success');}catch(e:any){toast.show(e.message,'error');}};
  const logout=async()=>{try{await post('/auth/logout');setUser(null);announceAuthChange();navigate('/login');}catch(e:any){toast.show(e.message,'error');}};
  const markAll=async()=>{try{await post('/notifications/read-all');setNotifications(v=>v.map(n=>({...n,read_at:new Date().toISOString()})));}catch(e:any){toast.show(e.message,'error');}};
@@ -75,6 +75,12 @@ export default function Shell(){
    dmScope==='favorites'?!archived&&!!dm.is_favorite:
    !archived;
   return matches&&matchesScope;
+ }).sort((a,b)=>{
+  const pinned=Number(!!b.is_pinned)-Number(!!a.is_pinned);
+  if(pinned)return pinned;
+  const aTime=new Date(a.last_message_at||a.created_at||0).getTime()||0;
+  const bTime=new Date(b.last_message_at||b.created_at||0).getTime()||0;
+  return bTime-aTime;
  });
  const selectedDm=location.pathname.match(/^\/channels\/@me\/([^/]+)/)?.[1];
  return <div className="app-shell clubhouse-shell">
@@ -111,6 +117,7 @@ export default function Shell(){
          <div className="dm-filters" role="group" aria-label="Filter conversations">
            <button className={dmScope==='all'?'active':''} onClick={()=>setDmScope('all')}>All</button>
            <button className={dmScope==='unread'?'active':''} onClick={()=>setDmScope('unread')}>Unread</button>
+           <button className={dmScope==='online'?'active':''} onClick={()=>setDmScope('online')}>Online</button>
            <button className={dmScope==='groups'?'active':''} onClick={()=>setDmScope('groups')}>Groups</button>
            <button className={dmScope==='favorites'?'active':''} onClick={()=>setDmScope('favorites')}>Starred</button>
            <button className={dmScope==='archived'?'active':''} onClick={()=>setDmScope('archived')}>Archived</button>

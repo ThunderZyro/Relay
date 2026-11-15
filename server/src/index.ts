@@ -22,7 +22,7 @@ import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 import { verifyStripeWebhookSignature } from './boost.js';
-import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,normalizeSettingsForEntitlement,requiresBoostSettings} from './user-settings.js';
+import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,isBoostSubscriptionActive,normalizeSettingsForEntitlement,requiresBoostSettings} from './user-settings.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -370,8 +370,7 @@ function emitFriendUpdate(...userIds: string[]) {
 
 function getBoostSnapshot(userId:string){
   const row=db.prepare('SELECT status,current_period_end FROM user_boosts WHERE user_id=?').get(userId) as any;
-  const end=row?.current_period_end?new Date(row.current_period_end).getTime():null;
-  const active=!!row&&['active','trialing'].includes(row.status)&&(end===null||(Number.isFinite(end)&&end>Date.now()));
+  const active=!!row&&isBoostSubscriptionActive(String(row.status||''),row.current_period_end?String(row.current_period_end):null);
   return {active,status:active?row.status:(row?.status||'inactive'),currentPeriodEnd:row?.current_period_end||null,
     checkoutConfigured:!!(process.env.STRIPE_SECRET_KEY?.trim()&&process.env.RELAY_BOOST_PRICE_ID?.trim()&&process.env.STRIPE_WEBHOOK_SECRET?.trim()),
     billingConfigured:!!(process.env.STRIPE_SECRET_KEY?.trim()&&process.env.STRIPE_WEBHOOK_SECRET?.trim())};

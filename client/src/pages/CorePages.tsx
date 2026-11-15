@@ -118,11 +118,27 @@ export function ProfilePage(){
   };
  },[userId]);
  const relationship=friends.find(f=>f.user.id===userId);const save=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',form);setProfile(r.user);setEditOpen(false);toast.show('Profile updated.','success');}catch(e:any){toast.show(e.message,'error');}};
- const friend=async()=>{try{if(relationship){await del(`/friends/${relationship.id}`);}else{await post('/friends/request',{username:profile.username});}await load();toast.show(relationship?'Friend relationship removed.':'Friend request sent.','success');}catch(e:any){toast.show(e.message,'error');}};
+ const friend=async()=>{
+  try{
+   if(relationship?.status==='pending'&&relationship.direction==='incoming'){
+    await post(`/friends/${relationship.id}/accept`);
+    await load();
+    toast.show('Friend request accepted.','success');
+   }else if(relationship){
+    await del(`/friends/${relationship.id}`);
+    await load();
+    toast.show(relationship.status==='accepted'?'Friend relationship removed.':'Friend request cancelled.','success');
+   }else{
+    await post('/friends/request',{username:profile.username});
+    await load();
+    toast.show('Friend request sent.','success');
+   }
+  }catch(e:any){toast.show(e.message,'error');}
+ };
  const dm=async()=>{try{const r=await post<any>('/dms',{userIds:[userId]});navigate(`/channels/@me/${r.conversation.id}`);}catch(e:any){toast.show(e.message,'error');}};
  const block=async()=>{try{if(blocked){await del(`/blocks/${userId}`);}else{await post(`/blocks/${userId}`);}setBlocked(!blocked);toast.show(blocked?'User unblocked.':'User blocked.','success');}catch(e:any){toast.show(e.message,'error');}};
  if(loading)return <Loading/>;if(!profile)return <EmptyState title="Profile unavailable" description="This user does not exist or is no longer available."/>;
- return <div className="page-content profile-page"><div className="profile-banner" style={profile.banner?{backgroundImage:`url(${profile.banner})`}:{}}/><div className="profile-card"><Avatar name={profile.username} src={profile.avatar} size="xl" presence={own?'online':profile.presence}/><div className="profile-actions">{own?<Button onClick={()=>setEditOpen(true)}>Edit profile</Button>:<><Button onClick={()=>void friend()}>{relationship?.status==='accepted'?'Remove friend':relationship?.status==='pending'?'Cancel request':'Add friend'}</Button><Button variant="secondary" onClick={()=>void dm()}><MessageCircle size={15}/> Message</Button><Button variant="ghost" onClick={()=>void block()}>{blocked?'Unblock':'Block'}</Button></>}</div><h1>{profile.username}</h1><p className="profile-status">{profile.status_text||'No status set'}</p><p>{profile.bio||'This user has not written a bio yet.'}</p><div className="profile-meta"><span><Activity size={14}/> {own?'Your account':profile.presence}</span><span>Member since {new Date(profile.created_at).toLocaleDateString()}</span></div></div>
+ return <div className="page-content profile-page"><div className="profile-banner" style={profile.banner?{backgroundImage:`url(${profile.banner})`}:{}}/><div className="profile-card"><Avatar name={profile.username} src={profile.avatar} size="xl" presence={profile.presence}/><div className="profile-actions">{own?<Button onClick={()=>setEditOpen(true)}>Edit profile</Button>:<><Button onClick={()=>void friend()}>{relationship?.status==='accepted'?'Remove friend':relationship?.status==='pending'?(relationship.direction==='incoming'?'Accept request':'Cancel request'):'Add friend'}</Button><Button variant="secondary" onClick={()=>void dm()}><MessageCircle size={15}/> Message</Button><Button variant="ghost" onClick={()=>void block()}>{blocked?'Unblock':'Block'}</Button></>}</div><h1>{profile.username}</h1><p className="profile-status">{profile.status_text||'No status set'}</p><p>{profile.bio||'This user has not written a bio yet.'}</p><div className="profile-meta"><span><Activity size={14}/> {own?'Your account':profile.presence}</span><span>Member since {new Date(profile.created_at).toLocaleDateString()}</span></div></div>
  {editOpen&&<Modal title="Edit profile" onClose={()=>setEditOpen(false)}><form onSubmit={save} className="form-stack"><Field label="Username"><input value={form.username} onChange={e=>setForm({...form,username:e.target.value})} minLength={3} maxLength={24} required/></Field><Field label="Bio"><textarea value={form.bio} onChange={e=>setForm({...form,bio:e.target.value})} maxLength={300}/></Field><Field label="Status"><input value={form.status_text} onChange={e=>setForm({...form,status_text:e.target.value})} maxLength={80}/></Field><Field label="Avatar image URL"><input value={form.avatar} onChange={e=>setForm({...form,avatar:e.target.value})} placeholder="https://…"/></Field><Field label="Banner image URL"><input value={form.banner} onChange={e=>setForm({...form,banner:e.target.value})} placeholder="https://…"/></Field><div className="modal-actions"><Button variant="secondary" onClick={()=>setEditOpen(false)}>Cancel</Button><Button type="submit"><Save size={15}/> Save profile</Button></div></form></Modal>}
  </div>;
 }

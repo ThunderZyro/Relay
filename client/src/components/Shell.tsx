@@ -22,7 +22,31 @@ export default function Shell(){
  useEffect(()=>{const syncInstall=()=>setInstallAvailable(hasRelayInstallPrompt());window.addEventListener('relay:install-available',syncInstall);return()=>window.removeEventListener('relay:install-available',syncInstall);},[]);
  useEffect(()=>{const beat=()=>post('/presence/heartbeat',{}).catch(()=>{});beat();const timer=window.setInterval(beat,45000);return()=>window.clearInterval(timer);},[]);
  useEffect(()=>{api<any>('/settings').then(r=>{applyRelayAppearance(r.settings,!!r.boost?.active);setKeybinds(v=>({...v,...r.settings?.keybinds}));}).catch(()=>{});const settingsChanged=(event:Event)=>{const detail=(event as CustomEvent).detail;if(!detail)return;const {boostActive,...settings}=detail;applyRelayAppearance(settings,!!boostActive);if(settings.keybinds)setKeybinds(v=>({...v,...settings.keybinds}));};window.addEventListener('relay:settings',settingsChanged);return()=>window.removeEventListener('relay:settings',settingsChanged);},[]);
- useEffect(()=>{const matches=(e:KeyboardEvent,bind:string)=>{const parts=bind.toLowerCase().split('+').map(x=>x.trim()).filter(Boolean);const key=parts.at(-1)||'';const wantsCtrl=parts.includes('ctrl')||parts.includes('control');const wantsMeta=parts.includes('meta')||parts.includes('cmd')||parts.includes('command');const wantsShift=parts.includes('shift');const wantsAlt=parts.includes('alt');return e.key.toLowerCase()===key&&(wantsCtrl?(e.ctrlKey||e.metaKey):!e.ctrlKey)&& (wantsMeta?e.metaKey:true) &&e.shiftKey===wantsShift&&e.altKey===wantsAlt;};const onKey=(e:KeyboardEvent)=>{if(matches(e,keybinds.focusSearch||'Ctrl+K')){e.preventDefault();setSearchOpen(true);}else if(matches(e,keybinds.toggleMembers||'Ctrl+Shift+M')){e.preventDefault();window.dispatchEvent(new Event('relay:toggle-members'));}if(e.key==='Escape'){setSearchOpen(false);setNotifyOpen(false);}};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);},[keybinds]);
+ useEffect(()=>{
+  const matches=(e:KeyboardEvent,bind:string)=>{
+   const parts=bind.toLowerCase().split('+').map(x=>x.trim()).filter(Boolean);
+   if(parts.length<2)return false;
+   const key=parts[parts.length-1];
+   const modifiers=parts.slice(0,-1);
+   const wantsCtrl=modifiers.includes('ctrl')||modifiers.includes('control');
+   const wantsMeta=modifiers.includes('meta')||modifiers.includes('cmd')||modifiers.includes('command');
+   const wantsShift=modifiers.includes('shift');
+   const wantsAlt=modifiers.includes('alt');
+   const controlMatches=wantsCtrl&&!wantsMeta?(e.ctrlKey||e.metaKey):e.ctrlKey===wantsCtrl;
+   const metaMatches=wantsCtrl&&!wantsMeta?true:e.metaKey===wantsMeta;
+   return e.key.toLowerCase()===key&&controlMatches&&metaMatches&&e.shiftKey===wantsShift&&e.altKey===wantsAlt;
+  };
+  const onKey=(e:KeyboardEvent)=>{
+   const target=e.target as HTMLElement|null;
+   const editing=!!target&&(target.isContentEditable||['INPUT','TEXTAREA','SELECT'].includes(target.tagName));
+   if(e.repeat)return;
+   if(e.key==='Escape'){setSearchOpen(false);setNotifyOpen(false);return;}
+   if(editing)return;
+   if(matches(e,keybinds.focusSearch||'Ctrl+K')){e.preventDefault();setSearchOpen(true);}
+   else if(matches(e,keybinds.toggleMembers||'Ctrl+Shift+M')){e.preventDefault();window.dispatchEvent(new Event('relay:toggle-members'));}
+  };
+  window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
+ },[keybinds]);
  useEffect(()=>{const query=search.trim();if(query.length<2){setSearchResults(null);return;}let active=true;setSearchResults(null);const timer=window.setTimeout(()=>api(`/search?q=${encodeURIComponent(query)}`).then(result=>{if(active)setSearchResults(result);}).catch(()=>{if(active)setSearchResults(null);}),250);return()=>{active=false;window.clearTimeout(timer);};},[search]);
  const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Plus';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname.includes('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
  const createServer=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await post<{server:Server;channelId:string}>('/servers',{name:serverName,description:serverDescription});setCreateOpen(false);setServerName('');setServerDescription('');await load();navigate(`/channels/${r.server.id}/${r.channelId}`);toast.show('Your club is ready.','success');}catch(e:any){toast.show(e.message,'error');}};

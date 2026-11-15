@@ -573,3 +573,36 @@ body,button,input,select,textarea {
   border-color:var(--line)!important;
   color:var(--text)!important;
 }
+
+
+/* Sidebar quick navigation and the persistent Relay Boost action. */
+.server-global-links {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:2px 5px;
+  padding:10px 9px 8px;
+  border-bottom:1px solid var(--line);
+}
+.server-global-links .side-item { min-width:0; height:34px; margin:0; padding:0 8px; font-size:12px; }
+.sidebar-boost {
+  display:flex; align-items:center; gap:10px; min-height:60px;
+  margin:10px 12px 9px; padding:9px 11px;
+  border:1px solid color-mix(in srgb,var(--accent) 38%,var(--line));
+  border-radius:12px;
+  background:linear-gradient(115deg,color-mix(in srgb,var(--accent) 17%,var(--panel)),var(--panel));
+  color:var(--text); text-decoration:none;
+  transition:transform .16s ease,border-color .16s ease,background .16s ease;
+  flex:none;
+}
+.sidebar-boost:hover,.sidebar-boost.active { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 22%,var(--panel)); transform:translateY(-1px); }
+.sidebar-boost:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.sidebar-boost-icon { width:34px; height:34px; display:grid; place-items:center; flex:none; border-radius:10px; background:var(--accent); color:var(--button-text); }
+.sidebar-boost-copy { display:flex; flex:1; min-width:0; flex-direction:column; gap:3px; }
+.sidebar-boost-copy strong { color:var(--text); font-size:12px; font-weight:750; }
+.sidebar-boost-copy small { color:var(--muted); font-size:10px; line-height:1.3; }
+.sidebar-boost-arrow { flex:none; color:var(--accent); }
+@media(max-width:540px) { .sidebar-boost { margin:8px 10px; min-height:56px; } }
+:root[data-theme] .clubhouse-shell .sidebar-boost { color:var(--text)!important; }
+:root[data-theme] .clubhouse-shell .sidebar-boost-copy strong { color:var(--text)!important; }
+:root[data-theme] .clubhouse-shell .sidebar-boost-copy small { color:var(--muted)!important; }
+:root[data-theme] .clubhouse-shell .sidebar-boost-arrow { color:var(--accent)!important; }

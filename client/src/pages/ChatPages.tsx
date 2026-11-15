@@ -14,7 +14,7 @@ function compareMessages(a: ChatMessage, b: ChatMessage) {
 }
 
 function renderInlineFormatting(value:string):React.ReactNode[]{
- const tokens=value.split(/(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||\*[^*]+\*|_[^_]+_|\x60[^\x60]+\x60|https?:\\/\\/[^\\s<>]+)/g).filter(Boolean);
+ const tokens=value.split(/(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||\*[^*]+\*|_[^_]+_|\x60[^\x60]+\x60|https?:[/]{2}[^\s<>]+)/g).filter(Boolean);
  return tokens.map((token,index)=>{
   if(token.startsWith('**')&&token.endsWith('**'))return <strong key={index}>{token.slice(2,-2)}</strong>;
   if(token.startsWith('__')&&token.endsWith('__'))return <u key={index}>{token.slice(2,-2)}</u>;

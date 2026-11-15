@@ -258,7 +258,7 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
 }
 function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
  const toast=useToast();const {user}=useAuth();const [bookmarked,setBookmarked]=useState<boolean|null>(null);
- useEffect(()=>{let active=true;api<{bookmarked:boolean}>(`/messages/${message.id}/bookmark`).then(result=>{if(active)setBookmarked(result.bookmarked);}).catch(error=>{if(active)toast.show(error.message,'error');}).finally(()=>{if(active&&bookmarked===null)setBookmarked(false);});return()=>{active=false;};},[message.id]);
+ useEffect(()=>{let active=true;api<{bookmarked:boolean}>(`/messages/${message.id}/bookmark`).then(result=>{if(active)setBookmarked(result.bookmarked);}).catch(error=>{if(active){setBookmarked(false);toast.show(error.message,'error');}});return()=>{active=false;};},[message.id]);
  const toggleBookmark=async()=>{try{if(bookmarked){await del(`/messages/${message.id}/bookmark`);setBookmarked(false);toast.show('Removed from saved messages.','success');}else{await post(`/messages/${message.id}/bookmark`);setBookmarked(true);toast.show('Message saved.','success');}}catch(error:any){toast.show(error.message,'error');}};
  return <Modal title="Message actions" onClose={onClose}><div className="form-stack">
   <Button variant="secondary" onClick={async()=>{try{await post(`/messages/${message.id}/reactions`,{emoji:'👍'});toast.show('Reaction added.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Add 👍 reaction</Button>

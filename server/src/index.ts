@@ -18,6 +18,7 @@ import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
 import { createMessageHistoryCursor } from './message-history.js';
 import { scheduleUntil } from './session-expiry.js';
+import { isPollClosed, validatePollOptions, validatePollSelection } from './poll-policy.js';
 import { shouldNotifyChannelMention } from './mention-policy.js';
 import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
@@ -1021,7 +1022,7 @@ function pollSummary(pollId:string,userId:string) {
     id:poll.id,
     allow_multiple:!!poll.allow_multiple,
     ends_at:poll.ends_at,
-    is_closed:!!poll.ends_at&&new Date(poll.ends_at).getTime()<=Date.now(),
+    is_closed:isPollClosed(poll.ends_at),
     total_votes:Number(total?.total||0),
     options:options.map(option=>({id:option.id,text:option.text,vote_count:Number(option.vote_count||0),selected:!!option.selected})),
     selected_option_ids:options.filter(option=>option.selected).map(option=>option.id)
@@ -1237,7 +1238,7 @@ const messageCreateSchema=z.object({
  }).refine(v=>v.content.trim().length>0||!!v.uploadIds?.length,{message:'Write a message or attach a file.'})
  .refine(v=>!v.poll||v.content.trim().length>=3,{message:'A poll question must contain at least 3 characters.'})
  .refine(v=>!v.poll||!v.uploadIds?.length,{message:'Polls cannot include file attachments yet.'})
- .refine(v=>!v.poll||new Set(v.poll.options.map(option=>option.toLocaleLowerCase())).size===v.poll.options.length,{message:'Poll options must be unique.'});
+ .refine(v=>!v.poll||validatePollOptions(v.poll.options)===null,{message:'Poll options must be unique and contain 1 to 80 characters.'});
 function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:string;dmId?:string}) {
   const p=messageCreateSchema.safeParse(req.body); if(!p.success)return fail(res,400,p.error.issues[0]?.message||'Invalid message.');
   if(destination.channelId){ if(!canReadChannel(destination.channelId,req.user!.id))return fail(res,403,'You cannot send messages in this channel.'); const c=db.prepare('SELECT * FROM channels WHERE id=?').get(destination.channelId) as any;
@@ -1296,15 +1297,14 @@ app.post('/api/polls/:pollId/vote', requireAuth, interactionLimiter, (req:Authed
   if(!accessibleMessage(poll.message_id,req.user!.id))return fail(res,404,'Poll not found.');
   const parsed=z.object({optionIds:z.array(z.string().min(1)).min(1).max(10)}).safeParse(req.body);
   if(!parsed.success)return fail(res,400,'Choose at least one poll option.');
-  if(new Set(parsed.data.optionIds).size!==parsed.data.optionIds.length)return fail(res,400,'Poll options must be unique.');
-  if(!poll.allow_multiple&&parsed.data.optionIds.length>1)return fail(res,400,'This poll allows one answer only.');
   const options=db.prepare('SELECT id FROM poll_options WHERE poll_id=?').all(poll.id) as any[];
   const valid=new Set(options.map(option=>option.id));
-  if(parsed.data.optionIds.some(optionId=>!valid.has(optionId)))return fail(res,400,'One of those options does not belong to this poll.');
-  if(poll.ends_at&&new Date(poll.ends_at).getTime()<=Date.now())return fail(res,410,'This poll has ended.');
+  const selectionError=validatePollSelection(parsed.data.optionIds,valid,!!poll.allow_multiple);
+  if(selectionError)return fail(res,400,selectionError);
+  if(isPollClosed(poll.ends_at))return fail(res,410,'This poll has ended.');
   db.transaction(()=>{
     db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`poll:${poll.id}`);
-    if(poll.ends_at&&new Date(poll.ends_at).getTime()<=Date.now())return;
+    if(isPollClosed(poll.ends_at))return;
     db.prepare('DELETE FROM poll_votes WHERE poll_id=? AND user_id=?').run(poll.id,req.user!.id);
     for(const optionId of parsed.data.optionIds){
       db.prepare('INSERT INTO poll_votes(poll_id,option_id,user_id) VALUES(?,?,?)').run(poll.id,optionId,req.user!.id);

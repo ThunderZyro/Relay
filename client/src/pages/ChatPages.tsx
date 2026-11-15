@@ -102,6 +102,7 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
   }
   setMessages([]);
   setHasOlder(false);
+  setLoadingOlder(false);
   setLoading(true);
   try{
    const response=await api<{messages:ChatMessage[]}>(route);

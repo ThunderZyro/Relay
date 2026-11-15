@@ -22,6 +22,7 @@ import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 import { verifyStripeWebhookSignature } from './boost.js';
+import { isSafeProfileMediaUrl } from './profile-policy.js';
 import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,isBoostSubscriptionActive,normalizeSettingsForEntitlement,requiresBoostSettings} from './user-settings.js';
 
 const app = express();
@@ -509,7 +510,7 @@ app.get('/api/profile/:userId', requireAuth, (req: AuthedRequest,res) => {
   res.json({user:userPublic(row),isBlocked});
 });
 app.patch('/api/profile', requireAuth, (req: AuthedRequest,res) => {
-  const parsed = z.object({ username:z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/).optional(), bio:z.string().max(300).optional(), status_text:z.string().max(80).optional(), avatar:z.string().max(500).nullable().optional(), banner:z.string().max(500).nullable().optional() }).safeParse(req.body);
+  const parsed = z.object({ username:z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/).optional(), bio:z.string().max(300).optional(), status_text:z.string().max(80).optional(), avatar:z.string().trim().max(500).refine(isSafeProfileMediaUrl,'Avatar must be an HTTP or HTTPS URL.').nullable().optional(), banner:z.string().trim().max(500).refine(isSafeProfileMediaUrl,'Banner must be an HTTP or HTTPS URL.').nullable().optional() }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,parsed.error.issues[0]?.message||'Invalid profile values.');
   const p=parsed.data;
   if (p.username && db.prepare('SELECT 1 FROM users WHERE LOWER(username)=LOWER(?) AND id<>?').get(p.username,req.user!.id)) return fail(res,409,'That username is already taken.');

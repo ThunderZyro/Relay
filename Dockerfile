@@ -10,7 +10,7 @@ COPY client ./client
 COPY server ./server
 COPY shared ./shared
 
-RUN npm run build
+RUN npm test && npm run build
 
 # Reinstall only the backend's production dependencies for the final image.
 RUN rm -rf node_modules

@@ -65,7 +65,7 @@ export function SettingsPage(){
   settingsSaveQueueRef.current=task.then(()=>undefined,()=>undefined);
   return task;
  };
- const saveProfile=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',profile);setProfile(r.user);setUser(r.user);toast.show('Profile saved.','success');}catch(e:any){toast.show(e.message,'error');}};
+ const saveProfile=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',profile);setProfile(r.user);setUser(user?{...user,...r.user}:r.user);toast.show('Profile saved.','success');}catch(e:any){toast.show(e.message,'error');}};
  const savePrivacy=async()=>{try{await patch('/privacy',privacy);toast.show('Privacy settings saved.','success');}catch(e:any){toast.show(e.message,'error');}};
  const changePassword=async(e:React.FormEvent)=>{e.preventDefault();if(password.newPassword!==password.confirm){toast.show('New passwords do not match.','error');return;}try{await put('/account/password',{currentPassword:password.currentPassword,newPassword:password.newPassword});setPassword({currentPassword:'',newPassword:'',confirm:''});toast.show('Password changed. Other sessions were revoked.','success');const r=await api<any>('/sessions');setSessions(r.sessions);}catch(e:any){toast.show(e.message,'error');}};
  const refreshDevices=async()=>{try{if(!navigator.mediaDevices?.enumerateDevices)throw new Error('This browser does not support device discovery.');const list=await navigator.mediaDevices.enumerateDevices();setDevices(list);}catch(e:any){toast.show(e.message,'error');}};

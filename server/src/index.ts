@@ -886,22 +886,23 @@ function markMessagesRead(messages:any[], userId:string, room:string, username:s
   const unread=messages.filter(message=>message.sender_id!==userId && !(message.read_by||[]).some((reader:any)=>reader.user_id===userId));
   if(!unread.length)return;
   const readAt=now();
-  db.transaction(()=>{
-    const insert=db.prepare('INSERT INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?) ON CONFLICT(message_id,user_id) DO NOTHING');
-    unread.forEach(message=>insert.run(message.id,userId,readAt));
-  })();
-  io.to(room).emit('message:read',{userId,username,messageIds:unread.map(message=>message.id),readAt});
+  const ids=unread.map(message=>message.id);
+  const placeholders=ids.map(()=>'?').join(',');
+  const inserted=db.prepare(`INSERT INTO message_reads(message_id,user_id,read_at)
+    SELECT m.id,?,? FROM messages m WHERE m.id IN (${placeholders})
+    ON CONFLICT(message_id,user_id) DO NOTHING RETURNING message_id`).all(userId,readAt,...ids) as Array<{message_id:string}>;
+  if(inserted.length)io.to(room).emit('message:read',{userId,username,messageIds:inserted.map(row=>row.message_id),readAt});
 }
 function markDmConversationRead(dmId:string,userId:string,room:string,username:string) {
-  const unread=db.prepare(`SELECT m.id FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
-    AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id=?)`).all(dmId,userId,userId) as Array<{id:string}>;
-  if(!unread.length)return;
+  const latestUnread=db.prepare(`SELECT m.id FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
+    AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id=?)
+    ORDER BY m.created_at DESC,m.id DESC LIMIT 60`).all(dmId,userId,userId) as Array<{id:string}>;
+  if(!latestUnread.length)return;
   const readAt=now();
-  db.transaction(()=>{
-    const insert=db.prepare('INSERT INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?) ON CONFLICT(message_id,user_id) DO NOTHING');
-    unread.forEach(message=>insert.run(message.id,userId,readAt));
-  })();
-  io.to(room).emit('message:read',{userId,username,messageIds:unread.map(message=>message.id),readAt});
+  db.prepare(`INSERT INTO message_reads(message_id,user_id,read_at)
+    SELECT m.id,?,? FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
+    ON CONFLICT(message_id,user_id) DO NOTHING`).run(userId,readAt,dmId,userId);
+  io.to(room).emit('message:read',{userId,username,messageIds:latestUnread.map(message=>message.id),readAt});
 }
 function sharedAttachments(whereSql:string,params:any[]) {
   return db.prepare(`SELECT a.id,a.filename,a.mime,a.size,m.created_at,u.username

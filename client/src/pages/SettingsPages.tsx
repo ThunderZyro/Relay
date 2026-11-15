@@ -1,6 +1,6 @@
 import React,{useEffect,useState} from 'react';
 import {Link,useNavigate,useParams} from 'react-router-dom';
-import {Activity,AlertTriangle,ArrowLeft,Ban,Check,Copy,Lock,Mail,Mic,Monitor,Plus,RefreshCw,Save,Search,Shield,Trash2,UserMinus,Users,Volume2,X,Settings as SettingsIcon,Eye,Keyboard,Palette,Bell,Smartphone} from 'lucide-react';
+import {Activity,AlertTriangle,ArrowLeft,ArrowRight,Ban,Check,Copy,Lock,Mail,Mic,Monitor,Plus,RefreshCw,Save,Search,Shield,Trash2,UserMinus,Users,Volume2,X,Settings as SettingsIcon,Eye,Keyboard,Palette,Bell,Smartphone} from 'lucide-react';
 import {api,post,patch,put,del} from '../api';
 import {useAuth,useToast} from '../state';
 import {Avatar,Button,EmptyState,Field,Loading,Modal,PageHeader,SearchInput} from '../components/ui';

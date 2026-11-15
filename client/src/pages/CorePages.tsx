@@ -100,14 +100,18 @@ export function DiscoverPage(){
  const toast=useToast();
  const navigate=useNavigate();
  useEffect(()=>{
+  let active=true;
   const timer=window.setTimeout(()=>{
    setLoading(true);
    api('/discover?q='+encodeURIComponent(q))
-    .then((r:any)=>setServers(r.servers))
-    .catch((e:any)=>toast.show(e.message,'error'))
-    .finally(()=>setLoading(false));
+    .then((r:any)=>{if(active)setServers(r.servers);})
+    .catch((e:any)=>{if(active)toast.show(e.message,'error');})
+    .finally(()=>{if(active)setLoading(false);});
   },220);
-  return()=>window.clearTimeout(timer);
+  return()=>{
+   active=false;
+   window.clearTimeout(timer);
+  };
  },[q]);
  const join=async(id:string)=>{
   try{await post('/servers/'+id+'/join');setJoined(v=>[...v,id]);toast.show('You joined the club.','success');navigate('/channels/'+id);}
@@ -131,8 +135,34 @@ export function DiscoverPage(){
 export function ProfilePage(){
  const {userId}=useParams();const {user:me}=useAuth();const toast=useToast();const navigate=useNavigate();const [profile,setProfile]=useState<any>(null);const [blocked,setBlocked]=useState(false);const [loading,setLoading]=useState(true);const [friends,setFriends]=useState<any[]>([]);const [editOpen,setEditOpen]=useState(false);const [form,setForm]=useState<any>({});
  const own=userId===me?.id;
- const load=async()=>{if(!userId)return;try{const [p,f]=await Promise.all([api<any>(`/profile/${userId}`),api<any>('/friends')]);setProfile(p.user);setBlocked(p.isBlocked);setFriends(f.friends||[]);setForm({username:p.user.username,bio:p.user.bio||'',status_text:p.user.status_text||'',avatar:p.user.avatar||'',banner:p.user.banner||''});}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};
- useEffect(()=>{setLoading(true);void load();const refreshFromSocket=()=>void load();window.addEventListener('relay:friends-refresh',refreshFromSocket);return()=>window.removeEventListener('relay:friends-refresh',refreshFromSocket);},[userId]);
+ const profileRequest=React.useRef(0);
+ const load=async()=>{
+  const request=++profileRequest.current;
+  if(!userId){setProfile(null);setLoading(false);return;}
+  try{
+   const [p,f]=await Promise.all([api<any>(`/profile/${userId}`),api<any>('/friends')]);
+   if(request!==profileRequest.current)return;
+   setProfile(p.user);
+   setBlocked(p.isBlocked);
+   setFriends(f.friends||[]);
+   setForm({username:p.user.username,bio:p.user.bio||'',status_text:p.user.status_text||'',avatar:p.user.avatar||'',banner:p.user.banner||''});
+  }catch(e:any){
+   if(request===profileRequest.current){setProfile(null);toast.show(e.message,'error');}
+  }finally{
+   if(request===profileRequest.current)setLoading(false);
+  }
+ };
+ useEffect(()=>{
+  setLoading(true);
+  setProfile(null);
+  void load();
+  const refreshFromSocket=()=>void load();
+  window.addEventListener('relay:friends-refresh',refreshFromSocket);
+  return()=>{
+   profileRequest.current+=1;
+   window.removeEventListener('relay:friends-refresh',refreshFromSocket);
+  };
+ },[userId]);
  const relationship=friends.find(f=>f.user.id===userId);const save=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',form);setProfile(r.user);setEditOpen(false);toast.show('Profile updated.','success');}catch(e:any){toast.show(e.message,'error');}};
  const friend=async()=>{try{if(relationship){await del(`/friends/${relationship.id}`);}else{await post('/friends/request',{username:profile.username});}await load();toast.show(relationship?'Friend relationship removed.':'Friend request sent.','success');}catch(e:any){toast.show(e.message,'error');}};
  const dm=async()=>{try{const r=await post<any>('/dms',{userIds:[userId]});navigate(`/channels/@me/${r.conversation.id}`);}catch(e:any){toast.show(e.message,'error');}};

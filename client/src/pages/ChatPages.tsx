@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
-import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Forward as ForwardIcon, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Forward as ForwardIcon, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound, Vote } from 'lucide-react';
 import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
 
-type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; read_by?:{user_id:string;username:string;read_at:string}[]; channel_id?:string|null; dm_id?:string|null; forwarded_from_message_id?:string|null; forwarded_from_user_id?:string|null; forwarded_from_username?:string|null };
+type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; read_by?:{user_id:string;username:string;read_at:string}[]; channel_id?:string|null; dm_id?:string|null; forwarded_from_message_id?:string|null; forwarded_from_user_id?:string|null; forwarded_from_username?:string|null; poll?:{id:string;allow_multiple:boolean;ends_at:string|null;is_closed:boolean;total_votes:number;options:{id:string;text:string;vote_count:number;selected:boolean}[];selected_option_ids:string[]}|null };
 
 function compareMessages(a: ChatMessage, b: ChatMessage) {
  const timeDifference = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -68,6 +68,23 @@ const ALLOWED_ATTACHMENT_TYPES = new Set([
 const BLOCKED_ATTACHMENT_EXTENSIONS = new Set(['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1']);
 type RoomServer = { server:{id:string;name:string;description?:string}; channels:any[]; members:any[]; categories:any[] };
 
+function PollCard({poll,question}:{poll:NonNullable<ChatMessage['poll']>;question:string}){
+ const toast=useToast();const [current,setCurrent]=useState(poll);const [selected,setSelected]=useState<string[]>(poll.selected_option_ids||[]);const [busy,setBusy]=useState(false);
+ useEffect(()=>{setCurrent(poll);setSelected(poll.selected_option_ids||[]);},[poll]);
+ const closed=current.is_closed||!!current.ends_at&&new Date(current.ends_at).getTime()<=Date.now();
+ const choose=(optionId:string)=>setSelected(values=>current.allow_multiple?(values.includes(optionId)?values.filter(value=>value!==optionId):[...values,optionId]):[optionId]);
+ const submit=async()=>{if(!selected.length||busy||closed)return;setBusy(true);try{const result=await post<{poll:NonNullable<ChatMessage['poll']>}>(`/polls/${current.id}/vote`,{optionIds:selected});setCurrent(result.poll);setSelected(result.poll.selected_option_ids||[]);}catch(error:any){toast.show(error.message,'error');}finally{setBusy(false);}};
+ return <section className="poll-card" aria-label={question}>
+  <div className="poll-card-heading"><b>Poll</b><span>{current.total_votes} vote{current.total_votes===1?'':'s'}</span></div>
+  <div className="poll-choices">{current.options.map(option=>{const percent=current.total_votes?Math.round(option.vote_count/current.total_votes*100):0;return <button type="button" key={option.id} className={`poll-choice ${selected.includes(option.id)?'selected':''}`} disabled={closed||busy} onClick={()=>choose(option.id)}>
+   <span className="poll-choice-top"><span className="poll-choice-indicator">{selected.includes(option.id)?'✓':''}</span><b>{option.text}</b><strong>{percent}%</strong></span>
+   <span className="poll-choice-track"><span style={{width:`${percent}%`}}/></span>
+   <small>{option.vote_count} vote{option.vote_count===1?'':'s'}</small>
+  </button>;})}</div>
+  <div className="poll-card-footer"><span>{closed?'Poll ended':current.ends_at?`Ends ${new Date(current.ends_at).toLocaleString()}`:'No end time'}{current.allow_multiple?' · Multiple answers allowed':''}</span><button type="button" className="btn primary" disabled={closed||busy||!selected.length} onClick={()=>void submit()}>{busy?'Saving…':'Vote'}</button></div>
+ </section>;
+}
+
 function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=false, onLoadOlder, currentUserId, onReply, onEdit, onMore, onReact, isDm=false }: {
  messages:ChatMessage[]; loading?:boolean; hasOlder?:boolean; loadingOlder?:boolean; onLoadOlder?:()=>void; currentUserId?:string; onReply:(m:ChatMessage)=>void; onEdit:(m:ChatMessage)=>void; onMore:(m:ChatMessage)=>void; onReact:(m:ChatMessage,emoji:string)=>void; isDm?:boolean;
 }) {
@@ -83,7 +100,7 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
     {!grouped&&<div className="message-meta"><b>{m.username}</b><time>{new Date(m.created_at).toLocaleString()}</time>{m.edited_at&&<small>(edited)</small>}{m.pinned? <span className="pinned-mark"><Pin size={10}/> Pinned</span>:null}</div>}
     {m.reply_to&&<div className="reply-quote"><Reply size={11}/> Reply</div>}
     {m.forwarded_from_message_id&&<div className="forwarded-message-label"><ForwardIcon size={11}/> Forwarded from {m.forwarded_from_username||'another member'}</div>}
-    <div className="message-content">{renderFormattedMessage(m.content)}</div><time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
+    <div className="message-content">{renderFormattedMessage(m.content)}</div>{m.poll&&<PollCard poll={m.poll} question={m.content}/>}<time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
     {own&&isDm&&!!m.read_by?.length&&<small className="message-read-status">{m.read_by.length===1?'Seen':`Seen by ${m.read_by.length}`}</small>}
     {m.attachments?.map(a=>{const url=`${apiOrigin}/api/uploads/${a.id}`;return a.mime.startsWith('image/')?<a className="attachment-preview" key={a.id} href={url} target="_blank" rel="noreferrer"><img src={url} alt={a.filename} loading="lazy"/><small>{a.filename}</small></a>:a.mime==='video/mp4'?<div className="attachment-preview" key={a.id}><video src={url} controls preload="metadata"/><small>{a.filename}</small></div>:a.mime.startsWith('audio/')?<div className="attachment-audio" key={a.id}><audio src={url} controls preload="metadata"/><small>{a.filename}</small></div>:<a className="attachment" key={a.id} href={url} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>;})}
     {!!m.reactions?.length&&<div className="reactions">{m.reactions.map((r,i)=><button key={`${r.emoji}-${i}`} onClick={()=>onReact(m,r.emoji)}>{r.emoji}</button>)}</div>}
@@ -106,13 +123,15 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
  const {user}=useAuth();const draftKey=`relay:draft:${user?.id||'guest'}:${isDm?'dm':'channel'}:${conversationId}`;
  const [content,setContent]=useState(()=>{try{return window.localStorage.getItem(draftKey)||'';}catch{return '';}});const [busy,setBusy]=useState(false);
  useEffect(()=>{try{if(content)window.localStorage.setItem(draftKey,content);else window.localStorage.removeItem(draftKey);}catch{/* Draft saving is best effort when browser storage is restricted. */}},[content,draftKey]);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
+ const [pollOpen,setPollOpen]=useState(false);const [pollQuestion,setPollQuestion]=useState('');const [pollOptions,setPollOptions]=useState(['','']);const [pollMultiple,setPollMultiple]=useState(false);const [pollDuration,setPollDuration]=useState('168');const [pollBusy,setPollBusy]=useState(false);
  const send=async(e?:React.FormEvent)=>{e?.preventDefault();socket?.emit('typing:stop',typingTarget);if((!content.trim()&&!files.length)||busy)return;setBusy(true);try{
   let uploadIds:string[]=[];
   if(files.length){const form=new FormData();files.forEach(f=>form.append('files',f));const uploaded=await post<{uploads:{id:string}[]}>('/uploads',form);uploadIds=uploaded.uploads.map(u=>u.id);}
   const route=isDm?`/dms/${conversationId}/messages`:`/channels/${conversationId}/messages`;
   const result=await post<{message:ChatMessage}>(route,{content:content.trim(),reply_to:reply?.id,uploadIds});onSent(result.message);setContent('');if(textareaRef.current)textareaRef.current.style.height='auto';setFiles([]);clearReply();
  }catch(err:any){toast.show(err.message,'error');}finally{setBusy(false);}};
- return <div className="composer-wrap">
+ const createPoll=async(e?:React.FormEvent)=>{e?.preventDefault();const question=pollQuestion.trim();const options=pollOptions.map(option=>option.trim()).filter(Boolean);if(question.length<3){toast.show('Write a poll question first.','error');return;}if(options.length<2){toast.show('Add at least two poll options.','error');return;}if(new Set(options.map(option=>option.toLocaleLowerCase())).size!==options.length){toast.show('Poll options must be unique.','error');return;}setPollBusy(true);try{const route=isDm?`/dms/${conversationId}/messages`:`/channels/${conversationId}/messages`;const result=await post<{message:ChatMessage}>(route,{content:question,poll:{options,allowMultiple:pollMultiple,durationHours:Number(pollDuration)}});onSent(result.message);setPollOpen(false);setPollQuestion('');setPollOptions(['','']);setPollMultiple(false);setPollDuration('168');}catch(error:any){toast.show(error.message,'error');}finally{setPollBusy(false);}};
+ return <><div className="composer-wrap">
   {reply&&<div className="reply-banner"><Reply size={13}/> Replying to {reply.username}: {reply.content.slice(0,90)}<button onClick={clearReply} aria-label="Cancel reply"><X size={13}/></button></div>}
   {files.length>0&&<div className="file-chips">{files.map((f,i)=><span key={`${f.name}-${i}`}>{f.name}<button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}><X size={12}/></button></span>)}</div>}
   <form className="composer" onSubmit={send}>
@@ -132,10 +151,21 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
     e.currentTarget.value = '';
    }}/>
    <button className="composer-icon" type="button" title="Attach file" onClick={()=>fileRef.current?.click()}><Paperclip size={18}/></button>
+   <button className="composer-icon" type="button" title="Create poll" onClick={()=>setPollOpen(true)}><Vote size={18}/></button>
    <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message… Supports Markdown formatting" maxLength={4000}/>
    <button className="composer-send" type="submit" disabled={busy||(!content.trim()&&!files.length)} title="Send"><Send size={16}/></button>
   </form><div className="composer-foot"><span>Enter to send · Shift+Enter for a new line · **bold** *italic* ~~strike~~ `code`</span><span>{content.length}/4000</span></div>
- </div>;
+ </div>
+ {pollOpen&&<Modal title="Create a poll" onClose={()=>setPollOpen(false)}><form className="form-stack" onSubmit={createPoll}>
+  <label className="field"><span>Question</span><input autoFocus value={pollQuestion} onChange={event=>setPollQuestion(event.target.value)} maxLength={240} placeholder="What should we do next?" required/></label>
+  <div className="poll-editor-heading"><b>Answer options</b><small>{pollOptions.length}/10</small></div>
+  {pollOptions.map((option,index)=><div className="poll-option-editor" key={index}><input value={option} onChange={event=>setPollOptions(values=>values.map((value,i)=>i===index?event.target.value:value))} maxLength={80} placeholder={`Option ${index+1}`}/><button type="button" className="icon-btn" title="Remove option" disabled={pollOptions.length<=2} onClick={()=>setPollOptions(values=>values.filter((_,i)=>i!==index))}><X size={15}/></button></div>)}
+  <Button type="button" variant="secondary" disabled={pollOptions.length>=10} onClick={()=>setPollOptions(values=>[...values,''])}>Add option</Button>
+  <label className="poll-checkbox"><input type="checkbox" checked={pollMultiple} onChange={event=>setPollMultiple(event.target.checked)}/> Allow multiple answers</label>
+  <label className="field"><span>Poll duration</span><select value={pollDuration} onChange={event=>setPollDuration(event.target.value)}><option value="1">1 hour</option><option value="24">1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option><option value="720">30 days</option></select></label>
+  <div className="modal-actions"><Button type="button" variant="secondary" onClick={()=>setPollOpen(false)}>Cancel</Button><Button type="submit" disabled={pollBusy}>{pollBusy?'Creating…':'Create poll'}</Button></div>
+ </form></Modal>}
+ </>;
 }
 
 function useRoomMessages(id:string|undefined,isDm:boolean){

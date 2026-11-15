@@ -148,7 +148,7 @@ export function InvitePage(){
  useEffect(()=>{api<any>(`/invites/${inviteCode}`).then(r=>setInvite(r.invite)).catch(e=>toast.show(e.message,'error')).finally(()=>setLoading(false));},[inviteCode]);
  const join=async()=>{try{const r=await post<any>(`/invites/${inviteCode}/join`);setJoined(true);toast.show('You joined the server.','success');navigate(`/channels/${r.serverId}`);}catch(e:any){toast.show(e.message,'error');}};
  if(loading)return <Loading/>;if(!invite)return <EmptyState title="Invite unavailable" description="This invite may have expired, reached its use limit, or been revoked."/>;
- return <div className="invite-page"><div className="invite-card"><div className="invite-logo">R</div><span className="eyebrow">YOU'VE BEEN INVITED</span><h1>{invite.server.name}</h1><p>{invite.server.description||'Join this Relay community to chat and share.'}</p><div className="invite-count"><Users size={16}/>{invite.server.member_count} members</div><Button onClick={()=>void join()} disabled={joined}>{joined?'Joined':'Accept invite'} <ArrowRight size={16}/></Button><Link to="/home">Decline and return home</Link></div></div>;
+ return <div className="invite-page"><div className="invite-card"><div className="invite-logo"><img src="/relay-mark.svg" alt="Relay"/></div><span className="eyebrow">YOU'VE BEEN INVITED</span><h1>{invite.server.name}</h1><p>{invite.server.description||'Join this Relay community to chat and share.'}</p><div className="invite-count"><Users size={16}/>{invite.server.member_count} members</div><Button onClick={()=>void join()} disabled={joined}>{joined?'Joined':'Accept invite'} <ArrowRight size={16}/></Button><Link to="/home">Decline and return home</Link></div></div>;
 }
 
 export function InboxPage(){

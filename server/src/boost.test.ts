@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import {test} from 'node:test';
-import {verifyStripeWebhookSignature} from './boost.js';
+import {verifyStripeWebhookSignature,stripeSubscriptionHasBoostPrice} from './boost.js';
 function signed(payload:Buffer,secret:string,timestamp:number){
  const digest=crypto.createHmac('sha256',secret).update(`${timestamp}.${payload.toString('utf8')}`).digest('hex');
  return `t=${timestamp},v1=${digest}`;

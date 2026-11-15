@@ -47,3 +47,21 @@ Replace the example host and placeholder credentials with values from a TURN pro
 2. Configure separate Preview values and a separate Preview database.
 3. Redeploy the cleanup branch as Preview and test uploads, reset emails, camera, screen sharing, and voice connectivity.
 4. Do not merge to the production branch until the Preview checks pass.
+
+
+## Relay Boost billing (Stripe)
+
+Relay Boost is an optional recurring subscription. An account receives the entitlement only after a signed Stripe webhook is verified; a browser setting can never grant Boost.
+
+Configure these Vercel Production environment variables before enabling checkout:
+
+- `STRIPE_SECRET_KEY`: Stripe secret key used to create Checkout and Billing Portal sessions.
+- `RELAY_BOOST_PRICE_ID`: recurring Stripe Price ID for Relay Boost.
+- `STRIPE_WEBHOOK_SECRET`: signing secret for the Stripe webhook endpoint.
+- `RELAY_PUBLIC_URL`: canonical HTTPS app origin.
+
+Register `https://YOUR_RELAY_DOMAIN/api/webhooks/stripe` in Stripe for `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
+
+Relay validates the raw-body timestamp and HMAC signature before changing the `user_boosts` entitlement table. Never expose Stripe secrets to the browser. Enable the Stripe customer portal before using the billing-management button. Without these credentials, checkout stays disabled and Relay does not pretend a purchase succeeded.
+
+Four built-in themes remain free. Custom palettes, custom font family, sidebar width, and message-corner customization require an active or trialing Boost entitlement.

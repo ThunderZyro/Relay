@@ -25,3 +25,21 @@ export function createMessageHistoryCursor(
     params: [before, before, beforeId]
   };
 }
+
+
+export type ReadReceiptMessage = {
+  id: string;
+  sender_id: string;
+  read_by?: Array<{ user_id: string }>;
+};
+
+/** Select only unread messages from the page actually loaded by the client. */
+export function unreadMessagesForUser<T extends ReadReceiptMessage>(
+  messages: readonly T[],
+  userId: string,
+): T[] {
+  return messages.filter(message =>
+    message.sender_id !== userId &&
+    !(message.read_by || []).some(reader => reader.user_id === userId)
+  );
+}

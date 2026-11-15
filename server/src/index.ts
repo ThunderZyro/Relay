@@ -328,7 +328,7 @@ async function deleteStoredObjects(storageNames: string[]) {
 function notify(userId: string, type: string, title: string, body: string, href: string) {
   const pref=db.prepare('SELECT data FROM settings WHERE user_id=?').get(userId) as any; let prefs:any={}; try{prefs=JSON.parse(pref?.data||'{}');}catch{}
   if((type==='dm' && prefs.dmNotifications===false) || (type==='mention' && prefs.mentionNotifications===false)) return;
-  const dmMatch=type==='dm'?href.match(/^\\/channels\\/@me\\/([^/?#]+)/):null;
+  const dmMatch=type==='dm'?href.match(/^\/channels\/@me\/([^/?#]+)/):null;
   if(dmMatch && db.prepare('SELECT 1 FROM dm_user_preferences WHERE dm_id=? AND user_id=? AND is_muted=1').get(dmMatch[1],userId))return;
   const notificationId = id();
   db.prepare('INSERT INTO notifications(id,user_id,type,title,body,href) VALUES(?,?,?,?,?,?)')

@@ -1858,3 +1858,19 @@ body {
 .voice-recording-note>span{width:8px;height:8px;border-radius:50%;background:#e14b59;box-shadow:0 0 0 3px rgba(225,75,89,.15);animation:relay-recording-pulse 1.2s infinite}
 .composer-icon.recording{color:#e14b59;background:rgba(225,75,89,.1)}
 @keyframes relay-recording-pulse{50%{opacity:.35}}
+
+/* Relay 2.0 — direct-message organization */
+.dm-row{display:flex;align-items:center;gap:3px;position:relative;min-width:0;padding-right:3px}
+.dm-row>.dm-item{flex:1;min-width:0}
+.dm-item-meta{display:flex;align-items:center;gap:4px;flex:none;overflow:visible!important}
+.dm-row-menu{position:relative;flex:none}
+.dm-row-menu>summary{list-style:none;width:27px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s ease,background .12s ease}
+.dm-row-menu>summary::-webkit-details-marker{display:none}
+.dm-row:hover .dm-row-menu>summary,.dm-row-menu[open]>summary,.dm-row-menu>summary:focus-visible{opacity:1}
+.dm-row-menu>summary:hover,.dm-row-menu[open]>summary{background:var(--panel-3);color:var(--text)}
+.dm-row-menu-popover{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:164px;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(0,0,0,.28);display:grid;gap:2px}
+.dm-row-menu-popover button{width:100%;border:0;background:transparent;color:var(--text);border-radius:5px;padding:8px 9px;display:flex;align-items:center;gap:8px;text-align:left;font-size:11px;cursor:pointer}
+.dm-row-menu-popover button:hover{background:var(--panel-3)}
+.dm-filters{overflow-x:auto;scrollbar-width:thin}
+.dm-filters button{flex:none}
+@media(hover:none){.dm-row-menu>summary{opacity:1}}

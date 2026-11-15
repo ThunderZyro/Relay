@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {DEFAULT_USER_SETTINGS,mergeUserSettings,normalizeSettingsForEntitlement,requiresBoostSettings,userSettingsPatchSchema} from './user-settings.js';
+import {DEFAULT_USER_SETTINGS,isBoostSubscriptionActive,mergeUserSettings,normalizeSettingsForEntitlement,requiresBoostSettings,userSettingsPatchSchema} from './user-settings.js';
 
 test('accepts all four free themes and standard accessibility/layout preferences',()=>{
  for(const theme of ['graphite','slate','warm','light']){
@@ -69,4 +69,14 @@ test('expired Boost removes all premium appearance effects but retains a free pr
 test('active Boost preserves custom appearance settings',()=>{
  const premium={theme:'custom',sidebarWidth:360,messageRadius:20,fontFamily:'mono',customTheme:{accent:'#123456'}};
  assert.deepEqual(normalizeSettingsForEntitlement(premium,true),premium);
+});
+
+test('Boost requires a valid future billing period end',()=>{
+ const now=1_800_000_000_000;
+ assert.equal(isBoostSubscriptionActive('active',new Date(now+60_000).toISOString(),now),true);
+ assert.equal(isBoostSubscriptionActive('trialing',new Date(now+60_000).toISOString(),now),true);
+ assert.equal(isBoostSubscriptionActive('active',new Date(now-60_000).toISOString(),now),false);
+ assert.equal(isBoostSubscriptionActive('active',null,now),false);
+ assert.equal(isBoostSubscriptionActive('active','not-a-date',now),false);
+ assert.equal(isBoostSubscriptionActive('past_due',new Date(now+60_000).toISOString(),now),false);
 });

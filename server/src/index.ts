@@ -19,6 +19,7 @@ import { databaseUrl, db, PERMISSIONS } from './db.js';
 import { createMessageHistoryCursor } from './message-history.js';
 import { scheduleUntil } from './session-expiry.js';
 import { isPollClosed, validatePollOptions, validatePollSelection } from './poll-policy.js';
+import { dmPreferencePatchSchema, mergeDmPreferences } from './dm-preferences.js';
 import { shouldNotifyChannelMention } from './mention-policy.js';
 import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
@@ -707,12 +708,18 @@ function dmSummary(dmId: string,userId: string) {
   const row=db.prepare(`SELECT d.*, (SELECT content FROM messages m WHERE m.dm_id=d.id AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message,
     (SELECT created_at FROM messages m WHERE m.dm_id=d.id AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message_at,
     (SELECT COUNT(*) FROM messages unread WHERE unread.dm_id=d.id AND unread.sender_id<>? AND unread.deleted_at IS NULL
-      AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=unread.id AND mr.user_id=?)) AS unread_count
-    FROM dms d JOIN dm_members me ON me.dm_id=d.id WHERE d.id=? AND me.user_id=?`).get(userId,userId,dmId,userId) as any;
+      AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=unread.id AND mr.user_id=?)) AS unread_count,
+    COALESCE(pref.is_pinned,0) AS is_pinned,
+    COALESCE(pref.is_archived,0) AS is_archived,
+    COALESCE(pref.is_muted,0) AS is_muted,
+    COALESCE(pref.is_favorite,0) AS is_favorite
+    FROM dms d JOIN dm_members me ON me.dm_id=d.id
+    LEFT JOIN dm_user_preferences pref ON pref.dm_id=d.id AND pref.user_id=?
+    WHERE d.id=? AND me.user_id=?`).get(userId,userId,userId,dmId,userId) as any;
   if(!row)return null;
   if(!canAccessDm(dmId,userId))return null;
   const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
-  return {...row,members};
+  return {...row,is_pinned:!!row.is_pinned,is_archived:!!row.is_archived,is_muted:!!row.is_muted,is_favorite:!!row.is_favorite,members};
 }
 app.get('/api/dms', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare('SELECT dm_id FROM dm_members WHERE user_id=?').all(req.user!.id) as any[];
@@ -732,6 +739,25 @@ app.post('/api/dms', requireAuth, interactionLimiter, (req: AuthedRequest,res) =
   const dmId=id(); const tx=db.transaction(()=>{db.prepare('INSERT INTO dms(id,name,is_group,created_by) VALUES(?,?,?,?)').run(dmId,parsed.data.name||null,members.length>2?1:0,req.user!.id); const stmt=db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?)'); members.forEach(uid=>stmt.run(dmId,uid));}); tx();
   members.slice(1).forEach(uid=>notify(uid,'dm','New conversation',`${req.user!.username} started a conversation.`,`/channels/@me/${dmId}`));
   res.status(201).json({conversation:dmSummary(dmId,req.user!.id)});
+});
+app.post('/api/dms/:dmId/preferences', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
+  if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))
+    return fail(res,404,'Conversation not found.');
+  const parsed=dmPreferencePatchSchema.safeParse(req.body);
+  if(!parsed.success)return fail(res,400,parsed.error.issues[0]?.message||'Invalid chat settings.');
+  const current=db.prepare('SELECT is_pinned,is_archived,is_muted,is_favorite FROM dm_user_preferences WHERE dm_id=? AND user_id=?')
+    .get(req.params.dmId,req.user!.id) as any;
+  const next=mergeDmPreferences(current,parsed.data);
+  db.prepare(`INSERT INTO dm_user_preferences(dm_id,user_id,is_pinned,is_archived,is_muted,is_favorite)
+    VALUES(?,?,?,?,?,?)
+    ON CONFLICT(dm_id,user_id) DO UPDATE SET
+      is_pinned=EXCLUDED.is_pinned,
+      is_archived=EXCLUDED.is_archived,
+      is_muted=EXCLUDED.is_muted,
+      is_favorite=EXCLUDED.is_favorite,
+      updated_at=NOW()`)
+    .run(req.params.dmId,req.user!.id,next.is_pinned?1:0,next.is_archived?1:0,next.is_muted?1:0,next.is_favorite?1:0);
+  res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.patch('/api/dms/:dmId', requireAuth, (req: AuthedRequest,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');

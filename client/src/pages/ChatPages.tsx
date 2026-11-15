@@ -308,7 +308,7 @@ export function ChannelPage(){
 type VoiceSignal = {type:'offer'|'answer';sdp:RTCSessionDescriptionInit}|{type:'candidate';candidate:RTCIceCandidateInit};
 function VoiceJoin({channelId}:{channelId:string}){
  const [joined,setJoined]=useState(false);const [joining,setJoining]=useState(false);const [muted,setMuted]=useState(false);const [deafened,setDeafened]=useState(false);const [cameraOn,setCameraOn]=useState(false);const [sharingScreen,setSharingScreen]=useState(false);const [peers,setPeers]=useState<any[]>([]);const [remoteStreams,setRemoteStreams]=useState<Record<string,MediaStream>>({});const [localVideo,setLocalVideo]=useState<MediaStream|null>(null);const [preferredOutputDeviceId,setPreferredOutputDeviceId]=useState('');const toast=useToast();
- const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const cameraTrackRef=useRef<MediaStreamTrack|null>(null);const screenTrackRef=useRef<MediaStreamTrack|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());const rotationReconnectTimerRef=useRef<number|undefined>(undefined);
+ const socketRef=useRef<Socket|null>(null);const localStreamRef=useRef<MediaStream|null>(null);const selectedInputDeviceRef=useRef('');const cameraTrackRef=useRef<MediaStreamTrack|null>(null);const screenTrackRef=useRef<MediaStreamTrack|null>(null);const connectionsRef=useRef<Map<string,RTCPeerConnection>>(new Map());const pendingCandidatesRef=useRef<Map<string,RTCIceCandidateInit[]>>(new Map());const rotationReconnectTimerRef=useRef<number|undefined>(undefined);
  const emitSignal=(peerId:string,payload:VoiceSignal)=>socketRef.current?.emit('webrtc:signal',{toSocketId:peerId,payload,channelId});
  const createPeer=async(peerId:string,offerer:boolean):Promise<RTCPeerConnection>=>{
   const existing=connectionsRef.current.get(peerId);if(existing)return existing;
@@ -345,7 +345,7 @@ function VoiceJoin({channelId}:{channelId:string}){
   if(rotationReconnectTimerRef.current)window.clearTimeout(rotationReconnectTimerRef.current);rotationReconnectTimerRef.current=undefined;
   socketRef.current?.emit('voice:leave',channelId);socketRef.current?.disconnect();socketRef.current=null;
   for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();
-  localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;
+  localStreamRef.current?.getTracks().forEach(track=>track.stop());localStreamRef.current=null;selectedInputDeviceRef.current='';
   if(screenTrackRef.current){screenTrackRef.current.onended=null;screenTrackRef.current.stop();screenTrackRef.current=null;}if(cameraTrackRef.current){cameraTrackRef.current.onended=null;cameraTrackRef.current.stop();cameraTrackRef.current=null;}
   setLocalVideo(null);setCameraOn(false);setSharingScreen(false);
   setRemoteStreams({});setPeers([]);setJoined(false);setMuted(false);setDeafened(false);
@@ -354,7 +354,7 @@ function VoiceJoin({channelId}:{channelId:string}){
   setJoining(true);
   try{
    if(!navigator.mediaDevices?.getUserMedia)throw new Error('Microphone access requires HTTPS or localhost and a supported browser.');
-   const preferences=await api<any>('/settings').catch(()=>({settings:{}}));const inputDeviceId=String(preferences.settings?.voiceInputDeviceId||'');setPreferredOutputDeviceId(String(preferences.settings?.voiceOutputDeviceId||''));let stream:MediaStream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{...(inputDeviceId?{deviceId:{exact:inputDeviceId}}:{}),echoCancellation:true,noiseSuppression:true,autoGainControl:true}});}catch(error:any){if(inputDeviceId&&['OverconstrainedError','NotFoundError'].includes(error.name)){toast.show('Your saved microphone was not found. Using the system default instead.','info');stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});}else throw error;}localStreamRef.current=stream;
+   const preferences=await api<any>('/settings').catch(()=>({settings:{}}));const inputDeviceId=String(preferences.settings?.voiceInputDeviceId||'');setPreferredOutputDeviceId(String(preferences.settings?.voiceOutputDeviceId||''));let stream:MediaStream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{...(inputDeviceId?{deviceId:{exact:inputDeviceId}}:{}),echoCancellation:true,noiseSuppression:true,autoGainControl:true}});}catch(error:any){if(inputDeviceId&&['OverconstrainedError','NotFoundError'].includes(error.name)){toast.show('Your saved microphone was not found. Using the system default instead.','info');stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});}else throw error;}localStreamRef.current=stream;selectedInputDeviceRef.current=inputDeviceId;
    const live=io(apiOrigin,{withCredentials:true,transports:['websocket'],reconnection:true,reconnectionDelay:500,reconnectionDelayMax:5000});socketRef.current=live;let plannedRotation=false;
    live.on('relay:rotate',()=>{plannedRotation=true;});
    const restoreVoiceRoom=()=>{
@@ -385,6 +385,43 @@ function VoiceJoin({channelId}:{channelId:string}){
  };
  const setAudioState=(nextMuted:boolean,nextDeafened:boolean)=>{setMuted(nextMuted);setDeafened(nextDeafened);localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!nextMuted;});socketRef.current?.emit('voice:state',{channelId,muted:nextMuted,deafened:nextDeafened});};
  useEffect(()=>{localStreamRef.current?.getAudioTracks().forEach(track=>{track.enabled=!muted;});},[muted]);
+ useEffect(()=>{
+  const onSettings=(event:Event)=>{
+   const prefs=(event as CustomEvent).detail||{};
+   const nextOutput=String(prefs.voiceOutputDeviceId||'');
+   setPreferredOutputDeviceId(nextOutput);
+   const nextInput=String(prefs.voiceInputDeviceId||'');
+   if(!joined||nextInput===selectedInputDeviceRef.current||!localStreamRef.current)return;
+   void (async()=>{
+    let nextStream:MediaStream|undefined;
+    try{
+     nextStream=await navigator.mediaDevices.getUserMedia({audio:{...(nextInput?{deviceId:{exact:nextInput}}:{}),echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+     const nextTrack=nextStream.getAudioTracks()[0];
+     if(!nextTrack)throw new Error('The selected microphone returned no audio track.');
+     const current=localStreamRef.current;
+     if(!current||!joined){nextStream.getTracks().forEach(track=>track.stop());return;}
+     const nextLocalStream=new MediaStream([...current.getVideoTracks(),nextTrack]);
+     nextTrack.enabled=!muted;
+     const replacements=Array.from(connectionsRef.current.values()).map(async pc=>{
+      const sender=pc.getSenders().find(item=>item.track?.kind==='audio');
+      if(sender)await sender.replaceTrack(nextTrack);
+     });
+     await Promise.all(replacements);
+     const oldAudio=current.getAudioTracks();
+     localStreamRef.current=nextLocalStream;
+     selectedInputDeviceRef.current=nextInput;
+     oldAudio.forEach(track=>track.stop());
+     nextStream.getVideoTracks().forEach(track=>track.stop());
+     toast.show('Voice microphone updated.','success');
+    }catch(error:any){
+     nextStream?.getTracks().forEach(track=>track.stop());
+     toast.show(error.name==='NotAllowedError'?'Microphone permission was denied.':error.message||'Could not switch microphones during this call.','error');
+    }
+   })();
+  };
+  window.addEventListener('relay:settings',onSettings);
+  return()=>window.removeEventListener('relay:settings',onSettings);
+ },[joined,muted,toast]);
  useEffect(()=>()=>{if(rotationReconnectTimerRef.current)window.clearTimeout(rotationReconnectTimerRef.current);socketRef.current?.disconnect();localStreamRef.current?.getTracks().forEach(track=>track.stop());if(screenTrackRef.current){screenTrackRef.current.onended=null;screenTrackRef.current.stop();}if(cameraTrackRef.current){cameraTrackRef.current.onended=null;cameraTrackRef.current.stop();}for(const pc of connectionsRef.current.values())pc.close();connectionsRef.current.clear();pendingCandidatesRef.current.clear();},[]);
  return <div className="voice-join">
   <Button onClick={()=>joined?leave():void join()} disabled={joining}>{joining?'Connecting…':joined?'Leave voice':'Join voice'}</Button>

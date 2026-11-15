@@ -19,3 +19,10 @@ test('rejects stale signatures and malformed headers',()=>{
  assert.equal(verifyStripeWebhookSignature(payload,signed(payload,'whsec_test',now/1000-301),'whsec_test',now),false);
  assert.equal(verifyStripeWebhookSignature(payload,'v1=not-a-signature','whsec_test',now),false);
 });
+
+test('only grants Boost for the configured recurring price',()=>{
+ assert.equal(stripeSubscriptionHasBoostPrice({items:{data:[{price:{id:'price_boost'}}]}},'price_boost'),true);
+ assert.equal(stripeSubscriptionHasBoostPrice({items:{data:[{price:{id:'price_other'}}]}},'price_boost'),false);
+ assert.equal(stripeSubscriptionHasBoostPrice({items:{data:[]}},'price_boost'),false);
+ assert.equal(stripeSubscriptionHasBoostPrice({items:{data:[{price:{id:'price_boost'}}]}},''),false);
+});

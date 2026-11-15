@@ -80,3 +80,11 @@ test('Boost requires a valid future billing period end',()=>{
  assert.equal(isBoostSubscriptionActive('active','not-a-date',now),false);
  assert.equal(isBoostSubscriptionActive('past_due',new Date(now+60_000).toISOString(),now),false);
 });
+
+
+test('validates the member-panel shortcut with the same rules as search',()=>{
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{toggleMembers:'Ctrl+Shift+M'}}).success,true);
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{toggleMembers:'Ctrl+Shift'}}).success,false);
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{toggleMembers:'Ctrl+Control+M'}}).success,false);
+ assert.equal(userSettingsPatchSchema.safeParse({keybinds:{toggleMembers:'Ctrl++M'}}).success,false);
+});

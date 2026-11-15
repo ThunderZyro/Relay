@@ -6,7 +6,7 @@ import { nanoid } from 'nanoid';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env') });
-const configuredDatabaseUrl = process.env.VERCEL_ENV === 'preview' ? (process.env.DATABASE_URL_PREVIEW || process.env.DATABASE_URL) : process.env.DATABASE_URL;
+const configuredDatabaseUrl = process.env.VERCEL_ENV === 'preview' ? process.env.DATABASE_URL_PREVIEW : process.env.DATABASE_URL;
 if (!configuredDatabaseUrl) throw new Error('DATABASE_URL is required. Configure the Relay PostgreSQL connection before starting the API.');
 export const databaseUrl: string = configuredDatabaseUrl;
 
@@ -18,10 +18,12 @@ const worker = new Worker(new URL(isTypeScript ? './db-worker.ts' : './db-worker
 worker.unref();
 
 const RESPONSE_BYTES = 16 * 1024 * 1024;
-const responseBuffer = new SharedArrayBuffer(8 + RESPONSE_BYTES);
-const responseHeader = new Int32Array(responseBuffer, 0, 2);
 
 function callWorker(action: 'query' | 'exec', sql: string, params: unknown[] = []) {
+  // Isolate each response. A timed-out request can finish later without
+  // overwriting the result of a subsequent request.
+  const responseBuffer = new SharedArrayBuffer(8 + RESPONSE_BYTES);
+  const responseHeader = new Int32Array(responseBuffer, 0, 2);
   Atomics.store(responseHeader, 0, 0);
   Atomics.store(responseHeader, 1, 0);
   worker.postMessage({ action, sql, params, responseBuffer });
@@ -108,7 +110,8 @@ const migrations = [
   { version: 3, name: 'staged uploads', file: '003_staged_uploads.sql' },
   { version: 4, name: 'password reset tokens', file: '004_password_reset_tokens.sql' },
   { version: 5, name: 'attachment and message query indexes', file: '005_attachment_query_indexes.sql' },
-  { version: 6, name: 'distributed Socket.IO attachments', file: '006_socket_io_adapter.sql' }
+  { version: 6, name: 'distributed Socket.IO attachments', file: '006_socket_io_adapter.sql' },
+  { version: 7, name: 'distributed API rate limits', file: '007_api_rate_limits.sql' }
 ];
 const applyMigrations = db.transaction(() => {
   db.prepare('SELECT pg_advisory_xact_lock(71324001)').get();

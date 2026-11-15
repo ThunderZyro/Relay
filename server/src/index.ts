@@ -10,7 +10,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
-import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { Server as SocketServer } from 'socket.io';
@@ -19,6 +18,8 @@ import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
 import { createMessageHistoryCursor } from './message-history.js';
 import { shouldNotifyChannelMention } from './mention-policy.js';
+import { passwordWithinBcryptLimit } from './password-policy.js';
+import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
 
 const app = express();
@@ -56,7 +57,15 @@ const uploadDir = path.resolve(process.cwd(), process.env.UPLOAD_DIR || '../uplo
 fs.mkdirSync(uploadDir, { recursive: true });
 
 app.set('trust proxy', isProd ? 1 : false);
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' }, contentSecurityPolicy: false }));
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: { directives: {
+    defaultSrc: ["'self'"], baseUri: ["'self'"], formAction: ["'self'"], frameAncestors: ["'none'"],
+    objectSrc: ["'none'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
+    imgSrc: ["'self'", 'https:', 'data:', 'blob:'], fontSrc: ["'self'", 'https:', 'data:'],
+    connectSrc: ["'self'", 'https:', 'wss:'], mediaSrc: ["'self'", 'blob:']
+  }}
+}));
 app.use(cors({
   origin: (requestOrigin, callback) => callback(null, isAllowedOrigin(requestOrigin)),
   credentials: true
@@ -71,17 +80,30 @@ app.use('/api', (_req, res, next) => {
   next();
 });
 
-// Cookie-authenticated mutations require a trusted browser origin and a
-// client-only header that ordinary cross-origin forms cannot send.
+// Cookie-authenticated writes use a shared Postgres quota across instances.
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
-const apiMutationLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 120,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: req => safeMethods.has(req.method)
-});
-app.use('/api', apiMutationLimiter, (req, res, next) => {
+const databaseRateLimit = (scope: string, limit: number, windowMs: number) => (req: Request, res: Response, next: NextFunction) => {
+  if (safeMethods.has(req.method)) return next();
+  const address = req.ip || req.socket.remoteAddress || 'unknown';
+  const bucketKey = crypto.createHash('sha256').update(`${scope}\\0${address}`).digest('hex');
+  void realtimePool.query(`
+    INSERT INTO api_rate_limits(bucket_key, request_count, expires_at)
+    VALUES($1, 1, NOW() + ($2 * INTERVAL '1 millisecond'))
+    ON CONFLICT(bucket_key) DO UPDATE SET
+      request_count = CASE WHEN api_rate_limits.expires_at <= NOW() THEN 1 ELSE api_rate_limits.request_count + 1 END,
+      expires_at = CASE WHEN api_rate_limits.expires_at <= NOW() THEN NOW() + ($2 * INTERVAL '1 millisecond') ELSE api_rate_limits.expires_at END,
+      updated_at = NOW()
+    WHERE api_rate_limits.expires_at <= NOW() OR api_rate_limits.request_count < $3
+    RETURNING request_count
+  `, [bucketKey, windowMs, limit]).then(result => {
+    if (!result.rowCount) { res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000))); return fail(res,429,'Too many requests. Please try again shortly.'); }
+    next();
+  }).catch(error => {
+    console.error('Relay distributed rate limiter failed:', error instanceof Error ? error.message : 'Unknown error');
+    fail(res,503,'Request protection is temporarily unavailable. Please try again shortly.');
+  });
+};
+app.use('/api', databaseRateLimit('api-mutation',120,60_000), (req, res, next) => {
   if (safeMethods.has(req.method)) return next();
   const requestOrigin = req.get('origin');
   if (!isAllowedOrigin(requestOrigin) || req.get('x-relay-request') !== '1') {
@@ -105,7 +127,7 @@ function directRealtimeConnectionString() {
 }
 const realtimePool=new Pool({
   connectionString:directRealtimeConnectionString(),
-  max:2,
+  max:4,
   connectionTimeoutMillis:10_000,
   idleTimeoutMillis:10_000,
   keepAlive:true
@@ -259,8 +281,8 @@ function emitFriendUpdate(...userIds: string[]) {
   for (const userId of new Set(userIds.filter(Boolean))) io.to(`user:${userId}`).emit('friends:updated');
 }
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
-const interactionLimiter = rateLimit({ windowMs: 60 * 1000, limit: 45, standardHeaders: 'draft-7', legacyHeaders: false });
+const authLimiter = databaseRateLimit('auth',20,15*60*1000);
+const interactionLimiter = databaseRateLimit('interaction',45,60*1000);
 app.get('/api/health', (_req, res) => {
   const productionStorageMissing = isProd ? missingStorageEnvironment : [];
   const passwordRecoveryConfigured = !!(process.env.RESEND_API_KEY?.trim() && process.env.RELAY_EMAIL_FROM?.trim());
@@ -300,7 +322,7 @@ app.get('/api/voice/ice-servers', requireAuth, (_req,res) => {
 });
 
 app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
-  const schema = z.object({ email: z.string().email().max(254), username: z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().min(10).max(128) });
+  const schema = z.object({ email: z.string().email().max(254), username: z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().min(10).max(128).refine(passwordWithinBcryptLimit, 'Password must be no more than 72 UTF-8 bytes.') });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, parsed.error.issues[0]?.message || 'Check your details.');
   const email = parsed.data.email.toLowerCase();
@@ -367,7 +389,7 @@ app.post('/api/auth/forgot-password', authLimiter, asyncRoute(async (req,res) =>
   res.json({ok:true,message:'If that email belongs to a Relay account, a reset link is on its way.'});
 }));
 app.post('/api/auth/reset-password', authLimiter, asyncRoute(async (req,res) => {
-  const p=z.object({token:z.string().min(20).max(200),password:z.string().min(10).max(128)}).safeParse(req.body);
+  const p=z.object({token:z.string().min(20).max(200),password:z.string().min(10).max(128).refine(passwordWithinBcryptLimit,'Password must be no more than 72 UTF-8 bytes.')}).safeParse(req.body);
   if(!p.success)return fail(res,400,'Use a valid reset link and a password of at least 10 characters.');
   const passwordHash=await bcrypt.hash(p.data.password,12);
   const resetResult=db.transaction(()=>{
@@ -388,7 +410,8 @@ app.post('/api/auth/reset-password', authLimiter, asyncRoute(async (req,res) => 
 app.get('/api/profile/:userId', requireAuth, (req: AuthedRequest,res) => {
   const row = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.userId) as any;
   if (!row) return fail(res,404,'User not found.');
-  res.json({user:userPublic(row),isBlocked:blockedEither(req.user!.id,row.id)});
+  const isBlocked = !!db.prepare('SELECT 1 FROM blocks WHERE blocker_id=? AND blocked_id=?').get(req.user!.id,row.id);
+  res.json({user:userPublic(row),isBlocked});
 });
 app.patch('/api/profile', requireAuth, (req: AuthedRequest,res) => {
   const parsed = z.object({ username:z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/).optional(), bio:z.string().max(300).optional(), status_text:z.string().max(80).optional(), avatar:z.string().max(500).nullable().optional(), banner:z.string().max(500).nullable().optional() }).safeParse(req.body);
@@ -417,7 +440,7 @@ app.delete('/api/sessions/:sessionId', requireAuth, (req: AuthedRequest,res) => 
   res.json({ok:true});
 });
 app.put('/api/account/password', requireAuth, asyncRoute(async (req,res) => {
-  const p=z.object({currentPassword:z.string().min(1),newPassword:z.string().min(10).max(128)}).safeParse(req.body);
+  const p=z.object({currentPassword:z.string().min(1).max(128),newPassword:z.string().min(10).max(128).refine(passwordWithinBcryptLimit,'Password must be no more than 72 UTF-8 bytes.')}).safeParse(req.body);
   if(!p.success)return fail(res,400,'New password must be at least 10 characters.');
   const row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(req.user!.id) as any;
   if(!row || !(await bcrypt.compare(p.data.currentPassword,row.password_hash)))return fail(res,403,'Current password is incorrect.');
@@ -508,20 +531,26 @@ app.post('/api/blocks/:userId', requireAuth, asyncRoute(async (req,res) => {
 }));
 app.delete('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => { db.prepare('DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?').run(req.user!.id,req.params.userId); res.json({ok:true}); });
 
+function canMessageDmPeer(senderId: string, recipientId: string) {
+  const recipient=db.prepare('SELECT dm_privacy FROM users WHERE id=?').get(recipientId) as any;
+  if(!recipient)return false;
+  const areFriends=!!db.prepare(`SELECT 1 FROM friendships WHERE status='accepted' AND
+    ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))`).get(senderId,recipientId,recipientId,senderId);
+  return canDirectMessagePeerByPolicy(recipient.dm_privacy,areFriends,blockedEither(senderId,recipientId));
+}
 function canAccessDm(dmId: string,userId: string) {
   if (!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(dmId,userId)) return false;
   const conversation=db.prepare('SELECT is_group FROM dms WHERE id=?').get(dmId) as any;
   if (conversation?.is_group) return true;
   const peers=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(dmId,userId) as any[];
-  return !peers.some(peer=>blockedEither(userId,peer.user_id));
+  return peers.length===1 && peers.every(peer=>canMessageDmPeer(userId,peer.user_id));
 }
 function dmSummary(dmId: string,userId: string) {
   const row=db.prepare(`SELECT d.*, (SELECT content FROM messages m WHERE m.dm_id=d.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
     (SELECT created_at FROM messages m WHERE m.dm_id=d.id ORDER BY m.created_at DESC LIMIT 1) AS last_message_at
     FROM dms d JOIN dm_members me ON me.dm_id=d.id WHERE d.id=? AND me.user_id=?`).get(dmId,userId) as any;
   if(!row)return null;
-  const peerIds=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(dmId,userId) as any[];
-  if(!row.is_group && peerIds.some(peer=>blockedEither(userId,peer.user_id)))return null;
+  if(!canAccessDm(dmId,userId))return null;
   const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
   return {...row,members};
 }
@@ -534,10 +563,7 @@ app.post('/api/dms', requireAuth, interactionLimiter, (req: AuthedRequest,res) =
   if(!parsed.success)return fail(res,400,'Select at least one other person.');
   const members=[...new Set([req.user!.id,...parsed.data.userIds])];
   if(members.length<2)return fail(res,400,'A conversation needs at least two members.');
-  for(const uid of members.slice(1)){ if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(uid))return fail(res,404,'One selected user was not found.'); if(blockedEither(req.user!.id,uid))return fail(res,403,'A block prevents this conversation.');
-    const target=db.prepare('SELECT dm_privacy FROM users WHERE id=?').get(uid) as any;
-    if(target.dm_privacy==='nobody')return fail(res,403,'One selected user does not accept DMs.');
-    if(target.dm_privacy==='friends' && !db.prepare(`SELECT 1 FROM friendships WHERE status='accepted' AND ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))`).get(req.user!.id,uid,uid,req.user!.id))return fail(res,403,'You must be friends before messaging this user.');
+  for(const uid of members.slice(1)){ if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(uid))return fail(res,404,'One selected user was not found.'); if(!canMessageDmPeer(req.user!.id,uid))return fail(res,403,'A block or privacy setting prevents this conversation.');
   }
   if(members.length===2){
     const existing=db.prepare(`SELECT d.id FROM dms d WHERE d.is_group=0 AND EXISTS(SELECT 1 FROM dm_members a WHERE a.dm_id=d.id AND a.user_id=?) AND EXISTS(SELECT 1 FROM dm_members b WHERE b.dm_id=d.id AND b.user_id=?) AND (SELECT COUNT(*) FROM dm_members c WHERE c.dm_id=d.id)=2`).get(members[0],members[1]) as any;
@@ -560,10 +586,11 @@ app.post('/api/dms/:dmId/members', requireAuth, interactionLimiter, (req: Authed
   const dm=db.prepare('SELECT is_group FROM dms WHERE id=?').get(req.params.dmId) as any; if(!dm?.is_group)return fail(res,400,'Members can only be added to a group conversation.');
   const parsed=z.object({userId:z.string()}).safeParse(req.body); if(!parsed.success)return fail(res,400,'Choose a user.');
   if(parsed.data.userId===req.user!.id)return fail(res,400,'You are already in this conversation.');
-  const target=db.prepare('SELECT dm_privacy FROM users WHERE id=?').get(parsed.data.userId) as any; if(!target)return fail(res,404,'User not found.');
-  if(blockedEither(req.user!.id,parsed.data.userId))return fail(res,403,'A block prevents adding this user.');
-  if(target.dm_privacy==='nobody')return fail(res,403,'This user does not accept direct messages.');
-  if(target.dm_privacy==='friends' && !db.prepare(`SELECT 1 FROM friendships WHERE status='accepted' AND ((requester_id=? AND addressee_id=?) OR (requester_id=? AND addressee_id=?))`).get(req.user!.id,parsed.data.userId,parsed.data.userId,req.user!.id))return fail(res,403,'You must be friends before adding this user.');
+  const targetExists=db.prepare('SELECT id FROM users WHERE id=?').get(parsed.data.userId); if(!targetExists)return fail(res,404,'User not found.');
+  if(!canMessageDmPeer(req.user!.id,parsed.data.userId))return fail(res,403,'A block or privacy setting prevents adding this user.');
+  const alreadyMember=!!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,parsed.data.userId);
+  const memberCount=Number((db.prepare('SELECT COUNT(*) AS count FROM dm_members WHERE dm_id=?').get(req.params.dmId) as any)?.count||0);
+  if(!alreadyMember&&memberCount>=21)return fail(res,409,'This group has reached the 21-member limit.');
   db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?) ON CONFLICT DO NOTHING').run(req.params.dmId,parsed.data.userId); res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.delete('/api/dms/:dmId/members/:userId', requireAuth, asyncRoute(async (req,res) => {
@@ -832,23 +859,33 @@ app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
   res.json({messages:messageRows(where,params)});
 });
+app.get('/api/dms/:dmId/messages/search', requireAuth, (req: AuthedRequest,res) => {
+  if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
+  const query=String(req.query.q||'').trim().slice(0,100);
+  if(query.length<2)return res.json({messages:[]});
+  res.json({messages:messageRows('m.dm_id=? AND m.deleted_at IS NULL AND m.content ILIKE ?', [req.params.dmId, `%${query}%`], 100)});
+});
 const messageCreateSchema=z.object({content:z.string().max(4000).default(''),reply_to:z.string().optional(),uploadIds:z.array(z.string()).max(8).optional()}).refine(v=>v.content.trim().length>0 || !!v.uploadIds?.length,{message:'Write a message or attach a file.'});
 function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:string;dmId?:string}) {
   const p=messageCreateSchema.safeParse(req.body); if(!p.success)return fail(res,400,p.error.issues[0]?.message||'Invalid message.');
   if(destination.channelId){ if(!canReadChannel(destination.channelId,req.user!.id))return fail(res,403,'You cannot send messages in this channel.'); const c=db.prepare('SELECT * FROM channels WHERE id=?').get(destination.channelId) as any;
     if(!hasPermission(c.server_id,req.user!.id,'send_messages'))return fail(res,403,'You do not have permission to send messages.'); const mem=membership(c.server_id,req.user!.id); if(mem?.timeout_until && new Date(mem.timeout_until).getTime()>Date.now())return fail(res,403,'Your server timeout is active.');
-    const latest=db.prepare('SELECT created_at FROM messages WHERE channel_id=? AND sender_id=? ORDER BY created_at DESC LIMIT 1').get(c.id,req.user!.id) as any;
-    if(c.slow_mode>0 && latest && Date.now()-new Date(latest.created_at).getTime()<c.slow_mode*1000)return fail(res,429,`Slow mode is active. Try again in ${Math.ceil(c.slow_mode-(Date.now()-new Date(latest.created_at).getTime())/1000)} seconds.`);
   } else {
     if(!canAccessDm(destination.dmId!,req.user!.id))return fail(res,403,'You cannot access this conversation.');
   }
   if(p.data.reply_to){const parent=db.prepare('SELECT channel_id,dm_id FROM messages WHERE id=?').get(p.data.reply_to) as any;if(!parent || parent.channel_id!==(destination.channelId||null) || parent.dm_id!==(destination.dmId||null))return fail(res,400,'The replied-to message is not in this conversation.');}
   const mid=id();
   const created=db.transaction(()=>{
+    if(destination.channelId){
+      db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`slow-mode:${destination.channelId}:${req.user!.id}`);
+      const channelState=db.prepare('SELECT slow_mode FROM channels WHERE id=?').get(destination.channelId) as any;
+      const latest=db.prepare('SELECT created_at FROM messages WHERE channel_id=? AND sender_id=? ORDER BY created_at DESC LIMIT 1').get(destination.channelId,req.user!.id) as any;
+      if(channelState?.slow_mode>0&&latest){const remaining=channelState.slow_mode-(Date.now()-new Date(latest.created_at).getTime())/1000;if(remaining>0)return {error:'slow_mode',retryAfter:Math.ceil(remaining)};}
+    }
     if(p.data.uploadIds?.length){
       for(const aid of p.data.uploadIds){
         const staged=db.prepare(`SELECT 1 FROM staged_uploads WHERE id=? AND user_id=? AND created_at::timestamptz>NOW()-?::interval`).get(aid,req.user!.id,`${stagedUploadTtlHours} hours`);
-        if(!staged)return false;
+        if(!staged)return {error:'upload_expired'};
       }
     }
     db.prepare('INSERT INTO messages(id,channel_id,dm_id,sender_id,content,reply_to) VALUES(?,?,?,?,?,?)').run(mid,destination.channelId||null,destination.dmId||null,req.user!.id,p.data.content,p.data.reply_to||null);
@@ -859,9 +896,10 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
       }
     }
     if(destination.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),destination.dmId);
-    return true;
+    return {ok:true};
   })();
-  if(!created)return fail(res,403,'One of those uploads has expired or is no longer available. Attach it again.');
+  if('error' in created && created.error==='slow_mode'){res.setHeader('Retry-After',String(created.retryAfter));return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);}
+  if('error' in created && created.error==='upload_expired')return fail(res,403,'One of those uploads has expired or is no longer available. Attach it again.');
   const row=messageRows(`m.id=?`,[mid],1)[0];
   const room=destination.channelId?`channel:${destination.channelId}`:`dm:${destination.dmId}`; io.to(room).emit('message:new',row);
   if(destination.dmId){const users=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(destination.dmId,req.user!.id) as any[]; users.forEach(u=>notify(u.user_id,'dm',`Message from ${req.user!.username}`,p.data.content.slice(0,100),`/channels/@me/${destination.dmId}`));}
@@ -949,7 +987,7 @@ app.get('/api/notifications', requireAuth, (req: AuthedRequest,res) => res.json(
 app.post('/api/notifications/read-all', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL').run(now(),req.user!.id);res.json({ok:true});});
 app.post('/api/notifications/:notificationId/read', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?').run(now(),req.params.notificationId,req.user!.id);res.json({ok:true});});
 app.get('/api/events', requireAuth, (req: AuthedRequest,res) => {
-  const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
+  const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? WHERE e.starts_at>=NOW() ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
   res.json({events:rows});
 });
 app.post('/api/servers/:serverId/events', requireAuth, (req: AuthedRequest,res) => {
@@ -993,8 +1031,11 @@ function userStoredUploadBytes(userId:string) {
 void cleanupExpiredStagedUploads().catch(error=>console.error('Staged upload cleanup failed.',error));
 const stagedUploadCleanupTimer=setInterval(()=>{void cleanupExpiredStagedUploads().catch(error=>console.error('Staged upload cleanup failed.',error));},60*60*1000);
 stagedUploadCleanupTimer.unref();
+const rateLimitCleanupTimer=setInterval(()=>{void realtimePool.query("DELETE FROM api_rate_limits WHERE expires_at < NOW() - INTERVAL '1 hour'").catch(error=>console.error('Rate limit cleanup failed.',error));},15*60*1000);
+rateLimitCleanupTimer.unref();
 const shutdownRelay=()=>{
   clearInterval(stagedUploadCleanupTimer);
+  clearInterval(rateLimitCleanupTimer);
   io.close(()=>{
     void realtimePool.end().catch(error=>console.error('Relay realtime pool shutdown failed:',error));
   });
@@ -1052,7 +1093,7 @@ app.get('/api/uploads/:uploadId', requireAuth, asyncRoute(async (req: AuthedRequ
     FROM attachments a LEFT JOIN messages m ON m.id=a.message_id LEFT JOIN channels c ON c.id=m.channel_id LEFT JOIN staged_uploads s ON s.id=a.id WHERE a.id=?
     UNION ALL SELECT filename,mime,storage_name,NULL,NULL,NULL,user_id,NULL FROM staged_uploads WHERE id=?`).get(req.params.uploadId,req.params.uploadId) as any;
   if(!row)return fail(res,404,'File not found.');
-  const allowed=row.staged_owner===req.user!.id || row.sender_id===req.user!.id || (row.channel_id&&canReadChannel(row.channel_id,req.user!.id)) || (row.dm_id&&canAccessDm(row.dm_id,req.user!.id));
+  const allowed=row.staged_owner===req.user!.id || (row.channel_id&&canReadChannel(row.channel_id,req.user!.id)) || (row.dm_id&&canAccessDm(row.dm_id,req.user!.id));
   if(!allowed)return fail(res,403,'You cannot access this file.');
   try{const bytes=await readUpload(row.storage_name);res.setHeader('Content-Type',row.mime);res.setHeader('Content-Length',bytes.length);res.setHeader('Content-Disposition',`inline; filename*=UTF-8''${encodeURIComponent(row.filename)}`);res.send(bytes);}catch{return fail(res,404,'File storage is unavailable.');}
 }));
@@ -1091,10 +1132,10 @@ io.on('connection',(socket)=>{
   socket.join(`user:${user.id}`);
   socket.join(`session:${user.session_id}`);
   const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
-  // Vercel Hobby WebSocket invocations are capped at 300 seconds. Reconnect
-  // early so clients can restore their room membership and missed messages.
+  // Send a rotation notice first. Clients reconnect only for this planned
+  // disconnect; expired/revoked sessions do not send the notice.
   const functionLifetimeTimer=(process.env.VERCEL==='1'||!!process.env.VERCEL_ENV)
-    ? setTimeout(()=>socket.disconnect(true),4*60*1000)
+    ? setTimeout(()=>{socket.emit('relay:rotate');setTimeout(()=>socket.disconnect(true),250);},4*60*1000-250)
     : undefined;
   sessionExpiryTimer.unref();
   functionLifetimeTimer?.unref();

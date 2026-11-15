@@ -225,7 +225,7 @@ function disconnectSessionSockets(sessionId: string) {
 function disconnectUserSockets(userId: string) {
   io.in(`user:${userId}`).disconnectSockets(true);
 }
-type AuthedRequest = Request & { user?: { id: string; username: string; email: string } };
+type AuthedRequest = Request & { user?: { id: string; username: string; email: string; session_id: string } };
 const sha = (value: string) => crypto.createHmac('sha256', sessionSecret).update(value).digest('hex');
 const id = () => nanoid(16);
 const now = () => new Date().toISOString();
@@ -243,7 +243,7 @@ function auth(req: AuthedRequest, res: Response, next: NextFunction) {
     res.clearCookie('relay_session', { httpOnly: true, sameSite: cookieSameSite, secure: cookieSecure, path: '/' });
     return fail(res, 401, 'Your session expired. Sign in again.');
   }
-  req.user = { id: session.user_id, username: session.username, email: session.email };
+  req.user = { id: session.user_id, username: session.username, email: session.email, session_id: session.session_id };
   db.prepare('UPDATE sessions SET last_active=? WHERE id=?').run(now(), session.session_id);
   db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(), session.user_id);
   next();
@@ -525,9 +525,11 @@ app.patch('/api/profile', requireAuth, (req: AuthedRequest,res) => {
   res.json({user:{...userPublic(row),email:row.email}});
 });
 app.get('/api/sessions', requireAuth, (req: AuthedRequest,res) => {
-  res.json({sessions:db.prepare('SELECT id,user_agent,created_at,last_active,expires_at FROM sessions WHERE user_id=? ORDER BY created_at DESC').all(req.user!.id)});
+  const sessions=db.prepare('SELECT id,user_agent,created_at,last_active,expires_at FROM sessions WHERE user_id=? ORDER BY created_at DESC').all(req.user!.id) as any[];
+  res.json({sessions:sessions.map(session=>({...session,is_current:session.id===req.user!.session_id}))});
 });
 app.delete('/api/sessions/:sessionId', requireAuth, (req: AuthedRequest,res) => {
+  if(req.params.sessionId===req.user!.session_id)return fail(res,409,'This is the device you are currently using. Sign out to end this session.');
   const session = db.prepare('SELECT id FROM sessions WHERE id=? AND user_id=?').get(req.params.sessionId, req.user!.id) as any;
   if (!session) return fail(res,404,'Session not found.');
   db.prepare('DELETE FROM sessions WHERE id=? AND user_id=?').run(session.id,req.user!.id);

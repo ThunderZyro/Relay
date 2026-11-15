@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {DEFAULT_USER_SETTINGS,mergeUserSettings,requiresBoostSettings,userSettingsPatchSchema} from './user-settings.js';
+import {DEFAULT_USER_SETTINGS,mergeUserSettings,normalizeSettingsForEntitlement,requiresBoostSettings,userSettingsPatchSchema} from './user-settings.js';
 
 test('accepts all four free themes and standard accessibility/layout preferences',()=>{
  for(const theme of ['graphite','slate','warm','light']){
@@ -53,4 +53,20 @@ test('Boost accounts can validate and merge a complete custom appearance',()=>{
  assert.equal(result.sidebarWidth,340);
  assert.equal(result.customTheme.bg,'#111111');
  assert.equal(result.customTheme.panel,DEFAULT_USER_SETTINGS.customTheme.panel);
+});
+
+test('expired Boost removes all premium appearance effects but retains a free preset',()=>{
+ const premium={theme:'custom',sidebarWidth:360,messageRadius:20,fontFamily:'mono',customTheme:{accent:'#123456'}};
+ const free=normalizeSettingsForEntitlement(premium,false);
+ assert.equal(free.theme,'graphite');
+ assert.equal(free.sidebarWidth,DEFAULT_USER_SETTINGS.sidebarWidth);
+ assert.equal(free.messageRadius,DEFAULT_USER_SETTINGS.messageRadius);
+ assert.equal(free.fontFamily,DEFAULT_USER_SETTINGS.fontFamily);
+ assert.equal(free.customTheme.accent,'#123456');
+ const selectedFree=normalizeSettingsForEntitlement({...premium,theme:'warm'},false);
+ assert.equal(selectedFree.theme,'warm');
+});
+test('active Boost preserves custom appearance settings',()=>{
+ const premium={theme:'custom',sidebarWidth:360,messageRadius:20,fontFamily:'mono',customTheme:{accent:'#123456'}};
+ assert.deepEqual(normalizeSettingsForEntitlement(premium,true),premium);
 });

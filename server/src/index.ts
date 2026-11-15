@@ -268,14 +268,23 @@ async function revokeDirectMessagesBetween(firstUserId:string,secondUserId:strin
     JOIN dm_members b ON b.dm_id=d.id AND b.user_id=?
     WHERE d.is_group=0`).all(firstUserId,secondUserId) as any[];
   if(!conversations.length)return;
-  const [firstSockets,secondSockets]=await Promise.all([
-    io.in(`user:${firstUserId}`).fetchSockets(),
-    io.in(`user:${secondUserId}`).fetchSockets()
-  ]);
   for(const conversation of conversations){
-    const room=`dm:${conversation.id}`;
-    for(const socket of [...firstSockets,...secondSockets])if(socket.rooms.has(room))socket.leave(room);
+    await Promise.all([firstUserId,secondUserId].map(userId=>revokeDmMemberRoom(conversation.id,userId)));
   }
+}
+async function refreshDirectMessageRoomAccess(userId:string) {
+  const conversations=db.prepare(`SELECT d.id FROM dms d JOIN dm_members m ON m.dm_id=d.id
+    WHERE m.user_id=? AND d.is_group=0`).all(userId) as Array<{id:string}>;
+  const affected=new Set<string>([userId]);
+  for(const conversation of conversations){
+    const members=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=?').all(conversation.id) as Array<{user_id:string}>;
+    for(const member of members){
+      affected.add(member.user_id);
+      if(!canAccessDm(conversation.id,member.user_id))await revokeDmMemberRoom(conversation.id,member.user_id);
+    }
+  }
+  // Clients re-check access and rejoin rooms that are still permitted.
+  emitFriendUpdate(...affected);
 }
 function emitFriendUpdate(...userIds: string[]) {
   for (const userId of new Set(userIds.filter(Boolean))) io.to(`user:${userId}`).emit('friends:updated');
@@ -475,12 +484,14 @@ app.put('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   res.json({settings:data});
 });
 app.get('/api/privacy', requireAuth, (req: AuthedRequest,res) => { const row=db.prepare('SELECT dm_privacy,activity_visible FROM users WHERE id=?').get(req.user!.id) as any; res.json({dm_privacy:row.dm_privacy,activity_visible:!!row.activity_visible}); });
-app.patch('/api/privacy', requireAuth, (req: AuthedRequest,res) => {
+app.patch('/api/privacy', requireAuth, asyncRoute(async (req,res) => {
   const parsed=z.object({dm_privacy:z.enum(['everyone','friends','nobody']).optional(),activity_visible:z.boolean().optional()}).safeParse(req.body);
   if(!parsed.success)return fail(res,400,'Invalid privacy setting.');
-  const fields=Object.entries(parsed.data); if(fields.length) db.prepare(`UPDATE users SET ${fields.map(([k])=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(([,v])=>v),req.user!.id);
+  const fields=Object.entries(parsed.data);
+  if(fields.length)db.prepare(`UPDATE users SET ${fields.map(([k])=>`${k}=?`).join(',')} WHERE id=?`).run(...fields.map(([,v])=>v),req.user!.id);
+  if(parsed.data.dm_privacy!==undefined)await refreshDirectMessageRoomAccess(req.user!.id);
   res.json({ok:true});
-});
+}));
 
 // Friends, blocks, and DMs
 app.get('/api/friends', requireAuth, (req: AuthedRequest,res) => {
@@ -509,13 +520,14 @@ app.post('/api/friends/:friendshipId/accept', requireAuth, (req: AuthedRequest,r
   emitFriendUpdate(f.requester_id,f.addressee_id);
   res.json({ok:true});
 });
-app.delete('/api/friends/:friendshipId', requireAuth, (req: AuthedRequest,res) => {
+app.delete('/api/friends/:friendshipId', requireAuth, asyncRoute(async (req,res) => {
   const friendship=db.prepare('SELECT requester_id,addressee_id FROM friendships WHERE id=? AND (requester_id=? OR addressee_id=?)').get(req.params.friendshipId,req.user!.id,req.user!.id) as any;
   if(!friendship)return fail(res,404,'Friend request or friendship not found.');
   db.prepare('DELETE FROM friendships WHERE id=?').run(req.params.friendshipId);
+  await Promise.all([friendship.requester_id,friendship.addressee_id].map(refreshDirectMessageRoomAccess));
   emitFriendUpdate(friendship.requester_id,friendship.addressee_id);
   res.json({ok:true});
-});
+}));
 app.get('/api/blocks', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare('SELECT b.blocked_id,u.username,u.avatar FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.blocker_id=?').all(req.user!.id) as any[];
   res.json({blocks:rows.map(r=>({id:r.blocked_id,username:r.username,avatar:r.avatar}))});
@@ -982,8 +994,7 @@ app.get('/api/search', requireAuth, (req: AuthedRequest,res) => {
   const messages=candidates.filter(message=>{
     if(message.channel_id)return canReadChannel(message.channel_id,req.user!.id);
     if(message.is_group)return true;
-    const peers=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(message.dm_id,req.user!.id) as any[];
-    return !peers.some(peer=>blockedEither(req.user!.id,peer.user_id));
+    return canAccessDm(message.dm_id,req.user!.id);
   }).slice(0,20);
   res.json({users,servers,messages});
 });
@@ -993,7 +1004,7 @@ app.get('/api/notifications', requireAuth, (req: AuthedRequest,res) => res.json(
 app.post('/api/notifications/read-all', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL').run(now(),req.user!.id);res.json({ok:true});});
 app.post('/api/notifications/:notificationId/read', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?').run(now(),req.params.notificationId,req.user!.id);res.json({ok:true});});
 app.get('/api/events', requireAuth, (req: AuthedRequest,res) => {
-  const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? WHERE e.starts_at>=NOW() ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
+  const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? WHERE e.starts_at::timestamptz>=NOW() ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
   res.json({events:rows});
 });
 app.post('/api/servers/:serverId/events', requireAuth, (req: AuthedRequest,res) => {
@@ -1145,6 +1156,7 @@ io.on('connection',(socket)=>{
     : undefined;
   sessionExpiryTimer.unref();
   functionLifetimeTimer?.unref();
+  socket.once('disconnect',()=>{clearTimeout(sessionExpiryTimer);if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);});
   socket.use((_packet,next)=>{
     const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
     if(!active){socket.disconnect(true);return;}

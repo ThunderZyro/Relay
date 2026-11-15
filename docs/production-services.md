@@ -27,7 +27,7 @@ The sender address must be verified with the email provider. After redeploying, 
 
 ## Voice connectivity
 
-Relay uses WebRTC. STUN-only connectivity does not work on every network. A TURN service can be configured with `RELAY_ICE_SERVERS` as a JSON array, for example:
+Relay voice rooms support microphone audio, camera, and screen sharing over WebRTC. STUN-only connectivity does not work on every network. A TURN service can be configured with `RELAY_ICE_SERVERS` as a JSON array, for example:
 
 ```json
 [
@@ -39,11 +39,11 @@ Relay uses WebRTC. STUN-only connectivity does not work on every network. A TURN
 ]
 ```
 
-Replace the example host and placeholder credentials with values from a TURN provider. Keep secrets in Vercel environment variables, not in Git.
+Replace the example host and placeholder credentials with values from a TURN provider. Keep secrets in Vercel environment variables, not in Git. Without TURN, some users behind restrictive NATs or firewalls may still fail to connect.
 
 ## Safe deployment sequence
 
 1. Configure Production variables only after creating the matching provider resources.
 2. Configure separate Preview values and a separate Preview database.
-3. Redeploy the cleanup branch as Preview and test uploads, reset emails, and voice connectivity.
+3. Redeploy the cleanup branch as Preview and test uploads, reset emails, camera, screen sharing, and voice connectivity.
 4. Do not merge to the production branch until the Preview checks pass.

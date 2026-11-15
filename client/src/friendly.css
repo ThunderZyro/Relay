@@ -521,3 +521,14 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
  .club-card-bottom{align-items:flex-start;flex-direction:column}
  .install-relay-btn{min-height:34px;padding:0 9px;font-size:11px}
 }
+
+
+/* Voice room camera and screen-sharing tiles. */
+.voice-video-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;width:100%;margin-top:14px}
+.voice-video-tile,.voice-local-preview{position:relative;overflow:hidden;border:1px solid #e3ddcf;border-radius:15px;background:#28332d}
+.voice-video-tile video,.voice-local-preview video{display:block;width:100%;max-height:260px;aspect-ratio:16/9;object-fit:cover;background:#1e2722}
+.voice-video-tile span,.voice-local-preview>span{display:block;padding:8px 10px;color:#fff;font-size:11px;font-weight:700}
+.voice-local-preview{width:min(100%,380px);margin-top:14px}
+.voice-join{flex-wrap:wrap}
+.voice-join>button{margin:3px}
+@media(max-width:640px){.voice-video-grid{grid-template-columns:1fr}.voice-video-tile video{max-height:230px}}

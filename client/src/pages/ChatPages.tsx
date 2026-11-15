@@ -260,15 +260,18 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
   live.on('disconnect',()=>{if(plannedRotation){plannedRotation=false;rotationTimer=window.setTimeout(()=>{if(isCurrentRoom())live.connect();},250);}});
   setSocket(live);
   const joinEvent=isDm?'room:join-dm':'room:join-channel';
+  const refreshIfVisible=()=>{
+   if(isCurrentRoom()&&document.visibilityState==='visible')void refreshLatest();
+  };
   live.on('connect',()=>{
    if(!isCurrentRoom())return;
    live.emit(joinEvent,id);
-   void refreshLatest();
+   refreshIfVisible();
   });
   live.on('friends:updated',()=>{
    if(!isCurrentRoom())return;
    if(isDm)live.emit(joinEvent,id);
-   void refreshLatest();
+   refreshIfVisible();
   });
   live.on('message:new',(message:ChatMessage)=>{
    if(!isCurrentRoom())return;
@@ -303,9 +306,11 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
    const timer=window.setTimeout(()=>{if(typingTimers.current.get(userId)===timer){typingTimers.current.delete(userId);setTypingUsers(current=>current.filter(item=>item.id!==userId));}},5000);
    typingTimers.current.set(userId,timer);
   });
-  const syncTimer=window.setInterval(()=>{if(isCurrentRoom())void refreshLatest();},15000);
+  const syncTimer=window.setInterval(refreshIfVisible,15000);
+  document.addEventListener('visibilitychange',refreshIfVisible);
   return()=>{
    window.clearInterval(syncTimer);
+   document.removeEventListener('visibilitychange',refreshIfVisible);
    if(rotationTimer)window.clearTimeout(rotationTimer);
    live.disconnect();
    for(const timer of typingTimers.current.values())window.clearTimeout(timer);

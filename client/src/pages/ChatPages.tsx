@@ -402,15 +402,19 @@ function VoiceJoin({channelId}:{channelId:string}){
      if(!current||!joined){nextStream.getTracks().forEach(track=>track.stop());return;}
      const nextLocalStream=new MediaStream([...current.getVideoTracks(),nextTrack]);
      nextTrack.enabled=!muted;
-     const replacements=Array.from(connectionsRef.current.values()).map(async pc=>{
-      const sender=pc.getSenders().find(item=>item.track?.kind==='audio');
-      if(sender)await sender.replaceTrack(nextTrack);
-     });
-     await Promise.all(replacements);
-     const oldAudio=current.getAudioTracks();
+     const oldAudio=current.getAudioTracks()[0];
+     if(!oldAudio)throw new Error('The current microphone track is no longer available.');
+     const audioSenders=Array.from(connectionsRef.current.values()).map(pc=>pc.getSenders().find(item=>item.track?.kind==='audio')).filter((sender):sender is RTCRtpSender=>!!sender);
+     try{await Promise.all(audioSenders.map(sender=>sender.replaceTrack(nextTrack)));}
+     catch(error){await Promise.allSettled(audioSenders.map(sender=>sender.replaceTrack(oldAudio)));throw error;}
+     if(localStreamRef.current!==current||!joined){
+      await Promise.allSettled(audioSenders.map(sender=>sender.replaceTrack(oldAudio)));
+      nextStream.getTracks().forEach(track=>track.stop());
+      return;
+     }
      localStreamRef.current=nextLocalStream;
      selectedInputDeviceRef.current=nextInput;
-     oldAudio.forEach(track=>track.stop());
+     oldAudio.stop();
      nextStream.getVideoTracks().forEach(track=>track.stop());
      toast.show('Voice microphone updated.','success');
     }catch(error:any){

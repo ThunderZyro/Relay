@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {Link,useNavigate,useParams} from 'react-router-dom';
 import {Activity,AlertTriangle,ArrowLeft,ArrowRight,Ban,Check,Copy,Lock,Mail,Mic,Monitor,Plus,RefreshCw,Save,Search,Shield,Trash2,UserMinus,Users,Volume2,X,Settings as SettingsIcon,Eye,Keyboard,Palette,Bell,Smartphone} from 'lucide-react';
 import {api,post,patch,put,del} from '../api';
@@ -8,23 +8,40 @@ import {applyRelayAppearance} from '../theme';
 
 const settingsNav=[['account','My account','Account information'],['profile','Profiles','Profile details'],['privacy','Privacy & safety','Privacy controls'],['notifications','Notifications','Notification preferences'],['appearance','Appearance','Theme and layout'],['accessibility','Accessibility','Comfort and access'],['keybinds','Keybinds','Keyboard shortcuts'],['voice','Voice','Audio preferences'],['devices','Devices','Available hardware'],['authorized-apps','Authorized apps','Connected integrations'],['sessions','Sessions','Signed-in devices'],['boost','Relay Boost','Premium customization']];
 export function SettingsPage(){
- const {section='account'}=useParams();const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const [settings,setSettings]=useState<any>({theme:'graphite',density:'comfortable',fontScale:100,reducedMotion:false,contrast:'normal',messageLayout:'cozy',sidebarWidth:292,messageRadius:12,fontFamily:'system',customTheme:{},keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'}});const [boost,setBoost]=useState<any>({active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false});const [profile,setProfile]=useState<any>({});const [privacy,setPrivacy]=useState<any>({dm_privacy:'friends',activity_visible:true});const [blocks,setBlocks]=useState<any[]>([]);const [sessions,setSessions]=useState<any[]>([]);const [devices,setDevices]=useState<MediaDeviceInfo[]>([]);const [password,setPassword]=useState({currentPassword:'',newPassword:'',confirm:''});const [loading,setLoading]=useState(true);const [browserPermission,setBrowserPermission]=useState(typeof Notification!=='undefined'?Notification.permission:'default');
- useEffect(()=>{Promise.all([api<any>('/settings'),api<any>(`/profile/${user?.id}`),api<any>('/blocks'),api<any>('/sessions'),api<any>('/privacy')]).then(([s,p,b,ss,pr])=>{setSettings(s.settings);setBoost(s.boost||{active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false});setProfile(p.user);setPrivacy({dm_privacy:pr.dm_privacy||'friends',activity_visible:!!pr.activity_visible});setBlocks(b.blocks);setSessions(ss.sessions);}).catch(e=>toast.show(e.message,'error')).finally(()=>setLoading(false));},[]);
+ const {section='account'}=useParams();const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const [settings,setSettings]=useState<any>({theme:'graphite',density:'comfortable',fontScale:100,reducedMotion:false,contrast:'normal',messageLayout:'cozy',sidebarWidth:292,messageRadius:12,fontFamily:'system',customTheme:{},keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'}});const [boost,setBoost]=useState<any>({active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false});const settingsRef=useRef(settings);const serverSettingsRef=useRef<any>(settings);const pendingSettingsRef=useRef<Array<{id:number;patch:any}>>([]);const settingsSaveQueueRef=useRef<Promise<void>>(Promise.resolve());const settingsSaveIdRef=useRef(0);const boostRef=useRef(boost);const [profile,setProfile]=useState<any>({});const [privacy,setPrivacy]=useState<any>({dm_privacy:'friends',activity_visible:true});const [blocks,setBlocks]=useState<any[]>([]);const [sessions,setSessions]=useState<any[]>([]);const [devices,setDevices]=useState<MediaDeviceInfo[]>([]);const [password,setPassword]=useState({currentPassword:'',newPassword:'',confirm:''});const [loading,setLoading]=useState(true);const [browserPermission,setBrowserPermission]=useState(typeof Notification!=='undefined'?Notification.permission:'default');
+ useEffect(()=>{let active=true;setLoading(true);Promise.all([api<any>('/settings'),api<any>(`/profile/${user?.id}`),api<any>('/blocks'),api<any>('/sessions'),api<any>('/privacy')]).then(([s,p,b,ss,pr])=>{if(!active)return;serverSettingsRef.current=s.settings;settingsRef.current=s.settings;pendingSettingsRef.current=[];setSettings(s.settings);const entitlement=s.boost||{active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false};boostRef.current=entitlement;setBoost(entitlement);setProfile(p.user);setPrivacy({dm_privacy:pr.dm_privacy||'friends',activity_visible:!!pr.activity_visible});setBlocks(b.blocks);setSessions(ss.sessions);}).catch(e=>{if(active)toast.show(e.message,'error');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[user?.id]);
  useEffect(()=>{applyRelayAppearance(settings,!!boost.active);},[settings,boost.active]);
- const saveSettings=async(next:any)=>{
-  const previous=settings;
-  const merged={...settings,...next};
-  setSettings(merged);
-  try{
-   const r=await put<any>('/settings',{settings:next});
-   setSettings(r.settings);
-   setBoost(r.boost||boost);
-   window.dispatchEvent(new CustomEvent('relay:settings',{detail:{...r.settings,boostActive:!!r.boost?.active}}));
-   toast.show('Settings saved.','success');
-  }catch(e:any){
-   setSettings(previous);
-   toast.show(e.message,'error');
-  }
+ const mergeSettingPatch=(base:any,patch:any)=>({
+  ...base,...patch,
+  keybinds:{...(base?.keybinds||{}),...(patch?.keybinds||{})},
+  customTheme:{...(base?.customTheme||{}),...(patch?.customTheme||{})}
+ });
+ const publishCurrentSettings=()=>{
+  const current=pendingSettingsRef.current.reduce((value,item)=>mergeSettingPatch(value,item.patch),serverSettingsRef.current);
+  settingsRef.current=current;setSettings(current);
+  window.dispatchEvent(new CustomEvent('relay:settings',{detail:{...current,boostActive:!!boostRef.current?.active}}));
+ };
+ const saveSettings=(next:any)=>{
+  const id=++settingsSaveIdRef.current;
+  pendingSettingsRef.current=[...pendingSettingsRef.current,{id,patch:next}];
+  publishCurrentSettings();
+  const run=async()=>{
+   try{
+    const r=await put<any>('/settings',{settings:next});
+    serverSettingsRef.current=r.settings;
+    if(r.boost){boostRef.current=r.boost;setBoost(r.boost);}
+    pendingSettingsRef.current=pendingSettingsRef.current.filter(item=>item.id!==id);
+    publishCurrentSettings();
+    toast.show('Settings saved.','success');
+   }catch(e:any){
+    pendingSettingsRef.current=pendingSettingsRef.current.filter(item=>item.id!==id);
+    publishCurrentSettings();
+    toast.show(e.message,'error');
+   }
+  };
+  const task=settingsSaveQueueRef.current.then(run,run);
+  settingsSaveQueueRef.current=task.then(()=>undefined,()=>undefined);
+  return task;
  };
  const saveProfile=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',profile);setProfile(r.user);setUser(r.user);toast.show('Profile saved.','success');}catch(e:any){toast.show(e.message,'error');}};
  const savePrivacy=async()=>{try{await patch('/privacy',privacy);toast.show('Privacy settings saved.','success');}catch(e:any){toast.show(e.message,'error');}};

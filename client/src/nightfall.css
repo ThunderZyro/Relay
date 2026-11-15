@@ -176,3 +176,8 @@ body,button,input,select,textarea {
 :root[data-density="compact"] .message {padding-top:2px;padding-bottom:2px}
 :root[data-message-layout="compact"] .message-content {line-height:1.35}
 :root[data-message-layout="compact"] .message-body {padding-top:5px;padding-bottom:5px}
+
+@media(max-width:1050px){.side-panel{width:min(270px,var(--custom-sidebar-width,292px))}}
+@media(max-width:760px){.side-panel{width:min(270px,var(--custom-sidebar-width,292px))}}
+@media(max-width:540px){.side-panel.show{width:min(300px,calc(100vw - 64px))}}
+:root[data-theme="custom"]{color-scheme:dark}

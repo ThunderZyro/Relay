@@ -1099,7 +1099,7 @@ app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, as
         }
       }
       db.prepare(`INSERT INTO messages(id,channel_id,dm_id,sender_id,content,forwarded_from_message_id,forwarded_from_user_id)
-        VALUES(?,?,?,?,?,?,?)`).run(messageId,p.data.channelId||null,p.data.dmId||null,req.user!.id,source.content,source.id,source.sender_id);
+        VALUES(?,?,?,?,?,?,?)`).run(messageId,p.data.channelId||null,p.data.dmId||null,req.user!.id,source.content,source.forwarded_from_message_id||source.id,source.forwarded_from_user_id||source.sender_id);
       for(const file of copiedFiles){
         db.prepare('INSERT INTO attachments(id,message_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)')
           .run(file.id,messageId,file.filename,file.mime,file.size,file.storage_name);

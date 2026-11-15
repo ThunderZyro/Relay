@@ -13,6 +13,53 @@ function compareMessages(a: ChatMessage, b: ChatMessage) {
  return timeDifference || a.id.localeCompare(b.id);
 }
 
+function renderInlineFormatting(value:string):React.ReactNode[]{
+ const tokens=value.split(/(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||\*[^*]+\*|_[^_]+_|\x60[^\x60]+\x60|https?:\\/\\/[^\\s<>]+)/g).filter(Boolean);
+ return tokens.map((token,index)=>{
+  if(token.startsWith('**')&&token.endsWith('**'))return <strong key={index}>{token.slice(2,-2)}</strong>;
+  if(token.startsWith('__')&&token.endsWith('__'))return <u key={index}>{token.slice(2,-2)}</u>;
+  if(token.startsWith('~~')&&token.endsWith('~~'))return <del key={index}>{token.slice(2,-2)}</del>;
+  if(token.startsWith('||')&&token.endsWith('||'))return <details className="message-spoiler" key={index}><summary>Spoiler</summary><span>{token.slice(2,-2)}</span></details>;
+  if((token.startsWith('*')&&token.endsWith('*'))||(token.startsWith('_')&&token.endsWith('_')))return <em key={index}>{token.slice(1,-1)}</em>;
+  if(token.startsWith('`')&&token.endsWith('`'))return <code key={index}>{token.slice(1,-1)}</code>;
+  if(/^https?:\/\//i.test(token))return <a key={index} href={token} target="_blank" rel="noopener noreferrer">{token}</a>;
+  return <React.Fragment key={index}>{token}</React.Fragment>;
+ });
+}
+
+function renderFormattedMessage(content:string):React.ReactNode{
+ const lines=content.split(/\r?\n/);const blocks:React.ReactNode[]=[];let index=0;
+ const isBlockStart=(line:string)=>/^\s*```/.test(line)||/^\s*>\s?/.test(line)||/^\s*[-*+]\s+/.test(line)||/^\s*\d+\.\s+/.test(line)||/^#{1,4}\s+/.test(line);
+ while(index<lines.length){
+  const line=lines[index];
+  if(!line.trim()){index++;continue;}
+  if(/^\s*```/.test(line)){
+   const codeLines:string[]=[];index++;
+   while(index<lines.length&&!/^\s*```/.test(lines[index]))codeLines.push(lines[index++]);
+   if(index<lines.length)index++;
+   blocks.push(<pre className="message-code-block" key={blocks.length}><code>{codeLines.join('\n')}</code></pre>);continue;
+  }
+  if(/^\s*>\s?/.test(line)){
+   const quote:string[]=[];
+   while(index<lines.length&&/^\s*>\s?/.test(lines[index]))quote.push(lines[index++].replace(/^\s*>\s?/,''));
+   blocks.push(<blockquote key={blocks.length}>{quote.map((text,i)=><React.Fragment key={i}>{renderInlineFormatting(text)}{i<quote.length-1?<br/>:null}</React.Fragment>)}</blockquote>);continue;
+  }
+  const unordered=/^\s*[-*+]\s+/.test(line);const ordered=/^\s*\d+\.\s+/.test(line);
+  if(unordered||ordered){
+   const items:string[]=[];const pattern=unordered?/^\s*[-*+]\s+/:/^\s*\d+\.\s+/;
+   while(index<lines.length&&pattern.test(lines[index]))items.push(lines[index++].replace(pattern,''));
+   blocks.push(unordered?<ul key={blocks.length}>{items.map((item,i)=><li key={i}>{renderInlineFormatting(item)}</li>)}</ul>:<ol key={blocks.length}>{items.map((item,i)=><li key={i}>{renderInlineFormatting(item)}</li>)}</ol>);continue;
+  }
+  const heading=line.match(/^(#{1,4})\s+(.+)$/);
+  if(heading){const level=Math.min(4,heading[1].length);const Tag=(['h2','h3','h4','h4'] as const)[level-1];blocks.push(<Tag key={blocks.length}>{renderInlineFormatting(heading[2])}</Tag>);index++;continue;}
+  const paragraph:string[]=[];
+  while(index<lines.length&&lines[index].trim()&&!isBlockStart(lines[index]))paragraph.push(lines[index++]);
+  if(!paragraph.length){paragraph.push(lines[index++]);}
+  blocks.push(<p key={blocks.length}>{paragraph.map((text,i)=><React.Fragment key={i}>{renderInlineFormatting(text)}{i<paragraph.length-1?<br/>:null}</React.Fragment>)}</p>);
+ }
+ return <>{blocks}</>;
+}
+
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
  'image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain',
@@ -35,7 +82,7 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
    <div className="message-body">
     {!grouped&&<div className="message-meta"><b>{m.username}</b><time>{new Date(m.created_at).toLocaleString()}</time>{m.edited_at&&<small>(edited)</small>}{m.pinned? <span className="pinned-mark"><Pin size={10}/> Pinned</span>:null}</div>}
     {m.reply_to&&<div className="reply-quote"><Reply size={11}/> Reply</div>}
-    <p className="message-content">{m.content}</p><time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
+    <div className="message-content">{renderFormattedMessage(m.content)}</div><time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
     {own&&isDm&&!!m.read_by?.length&&<small className="message-read-status">{m.read_by.length===1?'Seen':`Seen by ${m.read_by.length}`}</small>}
     {m.attachments?.map(a=>{const url=`${apiOrigin}/api/uploads/${a.id}`;return a.mime.startsWith('image/')?<a className="attachment-preview" key={a.id} href={url} target="_blank" rel="noreferrer"><img src={url} alt={a.filename} loading="lazy"/><small>{a.filename}</small></a>:a.mime==='video/mp4'?<div className="attachment-preview" key={a.id}><video src={url} controls preload="metadata"/><small>{a.filename}</small></div>:a.mime.startsWith('audio/')?<div className="attachment-audio" key={a.id}><audio src={url} controls preload="metadata"/><small>{a.filename}</small></div>:<a className="attachment" key={a.id} href={url} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>;})}
     {!!m.reactions?.length&&<div className="reactions">{m.reactions.map((r,i)=><button key={`${r.emoji}-${i}`} onClick={()=>onReact(m,r.emoji)}>{r.emoji}</button>)}</div>}
@@ -84,9 +131,9 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
     e.currentTarget.value = '';
    }}/>
    <button className="composer-icon" type="button" title="Attach file" onClick={()=>fileRef.current?.click()}><Paperclip size={18}/></button>
-   <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message…" maxLength={4000}/>
+   <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message… Supports Markdown formatting" maxLength={4000}/>
    <button className="composer-send" type="submit" disabled={busy||(!content.trim()&&!files.length)} title="Send"><Send size={16}/></button>
-  </form><div className="composer-foot"><span>Enter to send · Shift+Enter for a new line</span><span>{content.length}/4000</span></div>
+  </form><div className="composer-foot"><span>Enter to send · Shift+Enter for a new line · **bold** *italic* ~~strike~~ `code`</span><span>{content.length}/4000</span></div>
  </div>;
 }
 

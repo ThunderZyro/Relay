@@ -6,16 +6,70 @@ import {useAuth,useToast} from '../state';
 import {Avatar,Button,EmptyState,Field,Loading,Modal,PageHeader,SearchInput} from '../components/ui';
 
 export function HomePage(){
- const {user}=useAuth();const [friends,setFriends]=useState<any[]>([]);const [dms,setDms]=useState<any[]>([]);const [loading,setLoading]=useState(true);
- useEffect(()=>{Promise.all([api('/friends'),api('/dms')]).then(([f,d]:any[])=>{setFriends(f.friends||[]);setDms(d.conversations||[]);}).finally(()=>setLoading(false));},[]);
- const accepted=friends.filter(f=>f.status==='accepted');const pending=friends.filter(f=>f.status==='pending');
- return <div className="page-content"><PageHeader title={`Welcome back, ${user?.username||'there'}`} subtitle="Your communities and conversations, all in one place." actions={<Link className="btn primary" to="/friends"><UserPlus size={16}/> Add friend</Link>}/>
-  <div className="home-grid"><section className="panel-card welcome-card"><span className="eyebrow">YOUR SPACE</span><h2>Make room for good conversations.</h2><p>Create a server for your group, join a community, or pick up where a DM left off.</p><div className="welcome-actions"><Link className="btn primary" to="/discover"><Compass size={16}/> Explore communities</Link><Link className="btn secondary" to="/friends"><Users size={16}/> Find people</Link></div><div className="welcome-decoration"><div className="bubble bubble-one">#</div><div className="bubble bubble-two"><MessageCircle size={25}/></div><div className="bubble bubble-three"><Users size={22}/></div></div></section>
-   <section className="panel-card"><div className="card-title"><h3>People</h3><Link to="/friends">View all <ArrowRight size={14}/></Link></div>{loading?<Loading/>:accepted.length?accepted.slice(0,5).map(f=><div className="person-line" key={f.id}><Avatar name={f.user.username} src={f.user.avatar} size="md" presence={f.user.presence}/><div><b>{f.user.username}</b><small>{f.user.status_text||f.user.presence}</small></div><Link className="icon-btn" to={`/profile/${f.user.id}`} aria-label={`View ${f.user.username}`}><ArrowRight size={16}/></Link></div>):<div className="small-empty">Your friend list is empty. Add someone to get started.</div>}</section>
+ const {user}=useAuth();
+ const [friends,setFriends]=useState<any[]>([]);
+ const [dms,setDms]=useState<any[]>([]);
+ const [loading,setLoading]=useState(true);
+ useEffect(()=>{
+  let active=true;
+  Promise.all([api('/friends'),api('/dms')])
+   .then(([f,d]:any[])=>{if(!active)return;setFriends(f.friends||[]);setDms(d.conversations||[]);})
+   .catch(()=>{})
+   .finally(()=>{if(active)setLoading(false);});
+  return()=>{active=false;};
+ },[]);
+ const accepted=friends.filter(f=>f.status==='accepted');
+ const pending=friends.filter(f=>f.status==='pending');
+ const firstName=user?.username||'friend';
+ return <div className="page-content clubhouse-home">
+  <section className="home-hero">
+   <div className="home-hero-copy">
+    <div className="home-kicker"><span>✦</span> YOUR LITTLE CORNER OF RELAY</div>
+    <h1>Welcome, {firstName}!</h1>
+    <p>Your messages, friends, and communities are all in one place.</p>
+    <div className="home-hero-actions">
+     <Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open messages</Link>
+     <Link className="home-quiet-link" to="/friends"><Users size={18}/> Meet my people <ArrowRight size={16}/></Link>
+    </div>
+    <div className="home-mini-counts">
+     <span><b>{accepted.length}</b> {accepted.length===1?'friend':'friends'}</span>
+     <i/>
+     <span><b>{dms.length}</b> {dms.length===1?'chat':'chats'}</span>
+    </div>
+   </div>
+   <div className="home-hero-art">
+     <img className="relay-mascot-art" src="/relay-mascots.svg" alt="Three friendly Relay chat mascots"/>
+     <span className="hero-art-caption"><i/> Good conversations start here</span>
+    </div>
+  </section>
+  <div className="home-shortcut-row" aria-label="Quick places">
+   <Link to="/discover" className="home-shortcut shortcut-clubs"><span className="shortcut-art"><Compass size={25}/><i>✳</i></span><span><b>Find a club</b><small>Explore new interests</small></span><ArrowRight size={18}/></Link>
+   <Link to="/friends" className="home-shortcut shortcut-people"><span className="shortcut-art"><Users size={25}/><i>♥</i></span><span><b>Find your people</b><small>Add a friend</small></span><ArrowRight size={18}/></Link>
+   <Link to="/channels/@me" className="home-shortcut shortcut-messages"><span className="shortcut-art"><MessageCircle size={25}/><i>✦</i></span><span><b>Read your chats</b><small>Pick up where you left off</small></span><ArrowRight size={18}/></Link>
   </div>
-  <div className="section-heading"><h2>Recent conversations</h2><Link to="/friends">Start a conversation</Link></div>
-  {loading?<Loading/>:dms.length?<div className="conversation-grid">{dms.slice(0,6).map(dm=>{const others=dm.members.filter((m:any)=>m.id!==user?.id);return <Link to={`/channels/@me/${dm.id}`} className="conversation-card" key={dm.id}><div className="conversation-avatars">{others.slice(0,3).map((m:any)=><Avatar key={m.id} name={m.username} src={m.avatar} size="md"/>)}</div><strong>{dm.name||others.map((m:any)=>m.username).join(', ')}</strong><p>{dm.last_message||'Start a conversation'}</p><small>{dm.is_group?'Group DM':'Direct message'}</small></Link>;})}</div>:<EmptyState title="No direct messages yet" description="Start a conversation from the Friends page or a person's profile." action={<Link className="btn secondary" to="/friends">Find people</Link>}/>}
-  {pending.length>0&&<div className="notice-banner"><UserPlus size={17}/><span>You have {pending.length} pending friend request{pending.length===1?'':'s'}.</span><Link to="/friends">Review requests <ArrowRight size={14}/></Link></div>}
+  <div className="home-lower-grid">
+   <section className="home-board home-friend-board">
+    <header className="home-board-heading"><div><span className="home-board-kicker">THE PEOPLE CORNER</span><h2>Your friends</h2></div><Link to="/friends">See everyone <ArrowRight size={15}/></Link></header>
+    {loading?<Loading label="Finding your friends…"/>:accepted.length?
+     <div className="home-friend-list">{accepted.slice(0,5).map((f:any,index:number)=><div className={'home-friend-card home-friend-card-'+(index%4)} key={f.id}>
+      <Avatar name={f.user.username} src={f.user.avatar} size="lg" presence={f.user.presence}/>
+      <div><b>{f.user.username}</b><small>{f.user.status_text||f.user.presence||'On Relay'}</small></div>
+      <Link to={'/profile/'+f.user.id} aria-label={'Open '+f.user.username+"'s profile"}><ArrowRight size={17}/></Link>
+     </div>)}</div>
+     :<div className="home-friendly-empty"><span className="empty-doodle">☺</span><div><b>Your people are waiting to meet you.</b><p>Add someone you know to start chatting.</p><Link to="/friends">Find a friend <ArrowRight size={15}/></Link></div></div>}
+   </section>
+   <section className="home-board home-chat-board">
+    <header className="home-board-heading"><div><span className="home-board-kicker">PICK UP WHERE YOU LEFT OFF</span><h2>Recent chats</h2></div><Link to="/channels/@me">All chats <ArrowRight size={15}/></Link></header>
+    {loading?<Loading label="Loading your chats…"/>:dms.length?
+     <div className="home-recent-list">{dms.slice(0,5).map((dm:any,index:number)=>{const others=dm.members.filter((m:any)=>m.id!==user?.id);const name=dm.name||others.map((m:any)=>m.username).join(', ')||'Group chat';return <Link to={'/channels/@me/'+dm.id} className={'home-recent-chat recent-chat-'+(index%4)} key={dm.id}>
+      <span className="recent-chat-avatar">{others.length>1?<Users size={19}/>:<Avatar name={others[0]?.username||'Friend'} src={others[0]?.avatar} size="md"/>}</span>
+      <span className="recent-chat-copy"><b>{name}</b><small>{dm.last_message||'Say hello and start the conversation'}</small></span>
+      <ArrowRight size={17}/>
+     </Link>;})}</div>
+     :<div className="home-friendly-empty"><span className="empty-doodle">✉</span><div><b>No chats just yet.</b><p>Choose a friend and send your first hello.</p><Link to="/friends">Find someone to chat with <ArrowRight size={15}/></Link></div></div>}
+   </section>
+  </div>
+  {pending.length>0&&<div className="home-pending-note"><span>✉</span><div><b>You have {pending.length} friend request{pending.length===1?'':'s'}.</b><small>Someone would like to connect with you.</small></div><Link to="/friends">Take a look <ArrowRight size={15}/></Link></div>}
  </div>;
 }
 
@@ -39,11 +93,39 @@ export function FriendsPage(){
 }
 
 export function DiscoverPage(){
- const [q,setQ]=useState('');const [servers,setServers]=useState<any[]>([]);const [joined,setJoined]=useState<string[]>([]);const [loading,setLoading]=useState(true);const toast=useToast();const navigate=useNavigate();
- useEffect(()=>{const timer=window.setTimeout(()=>{setLoading(true);api<{servers:any[]}>(`/discover?q=${encodeURIComponent(q)}`).then(r=>setServers(r.servers)).catch(e=>toast.show(e.message,'error')).finally(()=>setLoading(false));},220);return()=>window.clearTimeout(timer);},[q]);
- const join=async(id:string)=>{try{await post(`/servers/${id}/join`);setJoined(v=>[...v,id]);toast.show('Joined community.','success');navigate(`/channels/${id}`);}catch(e:any){toast.show(e.message,'error');}};
- return <div className="page-content"><PageHeader title="Discover communities" subtitle="Find a space for your interests, projects, and people."/><div className="discover-search"><SearchInput value={q} onChange={setQ} placeholder="Search communities"/><span>{servers.length} communities</span></div>
- {loading?<Loading/>:servers.length?<div className="server-grid">{servers.map(s=><article className="server-card" key={s.id}><div className="server-cover"><span className="server-avatar-large">{s.name.slice(0,1).toUpperCase()}</span></div><div className="server-card-body"><h3>{s.name}</h3><p>{s.description||'A community on Relay.'}</p><div className="server-card-meta"><span><Users size={14}/>{s.member_count} members</span><span><Globe size={14}/> Public</span></div><Button disabled={joined.includes(s.id)} onClick={()=>void join(s.id)}>{joined.includes(s.id)?'Joined':'Join community'} <ArrowRight size={15}/></Button></div></article>)}</div>:<EmptyState title="No communities found" description="Try another search, or create your own server." icon={Compass}/>}</div>;
+ const [q,setQ]=useState('');
+ const [servers,setServers]=useState<any[]>([]);
+ const [joined,setJoined]=useState<string[]>([]);
+ const [loading,setLoading]=useState(true);
+ const toast=useToast();
+ const navigate=useNavigate();
+ useEffect(()=>{
+  const timer=window.setTimeout(()=>{
+   setLoading(true);
+   api('/discover?q='+encodeURIComponent(q))
+    .then((r:any)=>setServers(r.servers))
+    .catch((e:any)=>toast.show(e.message,'error'))
+    .finally(()=>setLoading(false));
+  },220);
+  return()=>window.clearTimeout(timer);
+ },[q]);
+ const join=async(id:string)=>{
+  try{await post('/servers/'+id+'/join');setJoined(v=>[...v,id]);toast.show('You joined the club.','success');navigate('/channels/'+id);}
+  catch(e:any){toast.show(e.message,'error');}
+ };
+ return <div className="page-content clubhouse-discover">
+  <section className="clubs-intro">
+   <div><span className="clubs-kicker">AROUND THE NEIGHBOURHOOD</span><h1>Find your kind of people.</h1><p>There are lots of little communities to explore. Look for one that shares your favourite things.</p></div>
+   <div className="clubs-intro-art" aria-hidden="true"><span className="clubs-art-sun">✳</span><span className="clubs-art-house">⌂</span><span className="clubs-art-star">✦</span><span className="clubs-art-line"/></div>
+  </section>
+  <div className="clubs-search-bar"><SearchInput value={q} onChange={setQ} placeholder="What are you interested in?"/><span>{servers.length} {servers.length===1?'club':'clubs'} to explore</span></div>
+  {loading?<Loading label="Looking around…"/>:servers.length?
+   <div className="clubs-grid">{servers.map((s:any,index:number)=><article className={'club-card club-card-'+(index%5)} key={s.id}>
+    <div className={'club-art club-art-'+(index%5)} aria-hidden="true"><span className="club-art-initial">{(s.name||'R').slice(0,1).toUpperCase()}</span><i className="club-art-shape club-art-shape-one"/><i className="club-art-shape club-art-shape-two"/><span className="club-art-spark">✳</span><span className="club-art-ribbon">A PLACE TO BELONG</span></div>
+    <div className="club-card-content"><div className="club-card-overline"><span>COMMUNITY CLUB</span><span><Users size={14}/>{s.member_count||0}</span></div><h2>{s.name}</h2><p>{s.description||'A friendly community on Relay. Come and have a look around.'}</p><div className="club-card-bottom"><span><Globe size={14}/> Public club</span><Button disabled={joined.includes(s.id)} onClick={()=>void join(s.id)}>{joined.includes(s.id)?'You joined':'Join this club'} <ArrowRight size={15}/></Button></div></div>
+   </article>)}</div>
+   :<div className="clubs-empty"><span>⌕</span><h2>No clubs found</h2><p>Try a different word, or come back and explore again.</p></div>}
+ </div>;
 }
 
 export function ProfilePage(){
@@ -66,7 +148,7 @@ export function InvitePage(){
  useEffect(()=>{api<any>(`/invites/${inviteCode}`).then(r=>setInvite(r.invite)).catch(e=>toast.show(e.message,'error')).finally(()=>setLoading(false));},[inviteCode]);
  const join=async()=>{try{const r=await post<any>(`/invites/${inviteCode}/join`);setJoined(true);toast.show('You joined the server.','success');navigate(`/channels/${r.serverId}`);}catch(e:any){toast.show(e.message,'error');}};
  if(loading)return <Loading/>;if(!invite)return <EmptyState title="Invite unavailable" description="This invite may have expired, reached its use limit, or been revoked."/>;
- return <div className="invite-page"><div className="invite-card"><div className="invite-logo">R</div><span className="eyebrow">YOU'VE BEEN INVITED</span><h1>{invite.server.name}</h1><p>{invite.server.description||'Join this Relay community to chat and share.'}</p><div className="invite-count"><Users size={16}/>{invite.server.member_count} members</div><Button onClick={()=>void join()} disabled={joined}>{joined?'Joined':'Accept invite'} <ArrowRight size={16}/></Button><Link to="/home">Decline and return home</Link></div></div>;
+ return <div className="invite-page"><div className="invite-card"><div className="invite-logo"><img src="/relay-mark.svg" alt="Relay"/></div><span className="eyebrow">YOU'VE BEEN INVITED</span><h1>{invite.server.name}</h1><p>{invite.server.description||'Join this Relay community to chat and share.'}</p><div className="invite-count"><Users size={16}/>{invite.server.member_count} members</div><Button onClick={()=>void join()} disabled={joined}>{joined?'Joined':'Accept invite'} <ArrowRight size={16}/></Button><Link to="/home">Decline and return home</Link></div></div>;
 }
 
 export function InboxPage(){

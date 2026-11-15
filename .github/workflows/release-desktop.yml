@@ -3,8 +3,11 @@ name: Build Relay Desktop
 on:
   pull_request:
     paths:
-      - 'desktop/**'
       - 'client/**'
+      - 'server/**'
+      - 'shared/**'
+      - 'desktop/**'
+      - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/release-desktop.yml'
@@ -13,12 +16,17 @@ on:
       - "v*"
   workflow_dispatch:
 
+# Build and test jobs must never need write access to repository contents.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.package.outputs.version }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -55,44 +63,62 @@ jobs:
           npm run build
           npm test
 
+      - name: Read and validate package version
+        id: package
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "The root package.json version is missing."
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $($env:GITHUB_REF_NAME) must match package.json version v$version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Build Windows installer
         run: npx electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never
 
-      - name: Publish installer to GitHub Release
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          $version = node -p "require('./package.json').version"
-          $tag = "v$version"
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $tag) {
-            throw "Tag $($env:GITHUB_REF_NAME) must match package.json version $tag."
-          }
-          $assets = @(
-            Get-ChildItem 'release/desktop/Relay-Setup-*.exe' -ErrorAction SilentlyContinue
-            Get-ChildItem 'release/desktop/*.blockmap' -ErrorAction SilentlyContinue
-            Get-Item 'release/desktop/latest.yml' -ErrorAction SilentlyContinue
-          )
-          if ($assets.Count -eq 0 -or -not ($assets.Name -match '^Relay-Setup-.*\.exe$')) {
-            throw "The installer EXE was not generated in release/desktop."
-          }
-          $assetPaths = @($assets | ForEach-Object { $_.FullName })
-          gh release view $tag --repo $env:GH_REPO *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag @assetPaths --clobber --repo $env:GH_REPO
-          } else {
-            gh release create $tag @assetPaths --title "Relay $version" --notes "Relay Desktop Windows x64 installer." --target $env:GITHUB_SHA --repo $env:GH_REPO
-          }
-          if ($LASTEXITCODE -ne 0) {
-            throw "GitHub Release upload failed for $tag."
-          }
-
-      - name: Keep installer artifacts available
-        if: always()
+      - name: Upload release assets
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v4
         with:
           name: relay-desktop-windows
           path: release/desktop/*
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-desktop-windows
+          path: release/desktop
+
+      - name: Publish installer to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELAY_VERSION: ${{ needs.build-windows.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${RELAY_VERSION}"
+          installer="release/desktop/Relay-Setup-${RELAY_VERSION}.exe"
+          test -f "$installer" || { echo "Installer not found: $installer"; exit 1; }
+
+          shopt -s nullglob
+          assets=(release/desktop/Relay-Setup-*.exe release/desktop/*.blockmap release/desktop/latest.yml)
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber --repo "$GH_REPO"
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --title "Relay $RELAY_VERSION" \
+              --notes "Relay Desktop Windows x64 installer." \
+              --target "$GITHUB_SHA" --repo "$GH_REPO"
+          fi

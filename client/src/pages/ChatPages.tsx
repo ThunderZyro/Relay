@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
-import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Forward as ForwardIcon, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound } from 'lucide-react';
 import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
 
-type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; read_by?:{user_id:string;username:string;read_at:string}[]; channel_id?:string|null; dm_id?:string|null };
+type ChatMessage = { id:string; sender_id:string; username:string; avatar?:string|null; content:string; created_at:string; edited_at?:string|null; reply_to?:string|null; pinned?:number; reactions?:{emoji:string;user_id:string}[]; attachments?:{id:string;filename:string;mime:string;size:number}[]; read_by?:{user_id:string;username:string;read_at:string}[]; channel_id?:string|null; dm_id?:string|null; forwarded_from_message_id?:string|null; forwarded_from_user_id?:string|null; forwarded_from_username?:string|null };
 
 function compareMessages(a: ChatMessage, b: ChatMessage) {
  const timeDifference = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -82,6 +82,7 @@ function MessageList({ messages, loading=false, hasOlder=false, loadingOlder=fal
    <div className="message-body">
     {!grouped&&<div className="message-meta"><b>{m.username}</b><time>{new Date(m.created_at).toLocaleString()}</time>{m.edited_at&&<small>(edited)</small>}{m.pinned? <span className="pinned-mark"><Pin size={10}/> Pinned</span>:null}</div>}
     {m.reply_to&&<div className="reply-quote"><Reply size={11}/> Reply</div>}
+    {m.forwarded_from_message_id&&<div className="forwarded-message-label"><ForwardIcon size={11}/> Forwarded from {m.forwarded_from_username||'another member'}</div>}
     <div className="message-content">{renderFormattedMessage(m.content)}</div><time className="message-time">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</time>
     {own&&isDm&&!!m.read_by?.length&&<small className="message-read-status">{m.read_by.length===1?'Seen':`Seen by ${m.read_by.length}`}</small>}
     {m.attachments?.map(a=>{const url=`${apiOrigin}/api/uploads/${a.id}`;return a.mime.startsWith('image/')?<a className="attachment-preview" key={a.id} href={url} target="_blank" rel="noreferrer"><img src={url} alt={a.filename} loading="lazy"/><small>{a.filename}</small></a>:a.mime==='video/mp4'?<div className="attachment-preview" key={a.id}><video src={url} controls preload="metadata"/><small>{a.filename}</small></div>:a.mime.startsWith('audio/')?<div className="attachment-audio" key={a.id}><audio src={url} controls preload="metadata"/><small>{a.filename}</small></div>:<a className="attachment" key={a.id} href={url} target="_blank" rel="noreferrer"><FilePlus2 size={18}/><span>{a.filename}<small>{Math.ceil(a.size/1024)} KB</small></span></a>;})}
@@ -305,15 +306,36 @@ function useRoomMessages(id:string|undefined,isDm:boolean){
 }
 function MessageActions({ message, isDm, onClose }: {message:ChatMessage;isDm:boolean;onClose:()=>void}) {
  const toast=useToast();const {user}=useAuth();const [bookmarked,setBookmarked]=useState<boolean|null>(null);
+ const [forwardOpen,setForwardOpen]=useState(false);const [forwardTargets,setForwardTargets]=useState<Array<{id:string;type:'dm'|'channel';label:string}>>([]);
+ const [forwardSelection,setForwardSelection]=useState('');const [forwardLoading,setForwardLoading]=useState(false);const [forwardBusy,setForwardBusy]=useState(false);
  useEffect(()=>{let active=true;api<{bookmarked:boolean}>(`/messages/${message.id}/bookmark`).then(result=>{if(active)setBookmarked(result.bookmarked);}).catch(error=>{if(active){setBookmarked(false);toast.show(error.message,'error');}});return()=>{active=false;};},[message.id]);
+ useEffect(()=>{if(!forwardOpen)return;let active=true;setForwardLoading(true);setForwardTargets([]);setForwardSelection('');
+  void (async()=>{const [dmResult,serverResult]=await Promise.all([api<{conversations:any[]}>('/dms'),api<{servers:any[]}>('/servers')]);
+   const dmTargets=(dmResult.conversations||[]).map(conversation=>({id:conversation.id,type:'dm' as const,label:conversation.name||conversation.members?.filter((member:any)=>member.id!==user?.id).map((member:any)=>member.username).join(', ')||'Direct message'}));
+   const serverResults=await Promise.all((serverResult.servers||[]).map(async(server:any)=>{try{return {server,room:await api<RoomServer>(`/servers/${server.id}`)};}catch{return null;}}));
+   const channelTargets=serverResults.filter(Boolean).flatMap((entry:any)=>(entry.room.channels||[]).filter((channel:any)=>channel.type!=='voice').map((channel:any)=>({id:channel.id,type:'channel' as const,label:`${entry.server.name} · #${channel.name}`})));
+   if(active){const options=[...dmTargets,...channelTargets];setForwardTargets(options);setForwardSelection(options.length?`${options[0].type}:${options[0].id}`:'');}
+  })().catch(error=>{if(active)toast.show(error.message,'error');}).finally(()=>{if(active)setForwardLoading(false);});
+  return()=>{active=false;};
+ },[forwardOpen,user?.id]);
  const toggleBookmark=async()=>{try{if(bookmarked){await del(`/messages/${message.id}/bookmark`);setBookmarked(false);toast.show('Removed from saved messages.','success');}else{await post(`/messages/${message.id}/bookmark`);setBookmarked(true);toast.show('Message saved.','success');}}catch(error:any){toast.show(error.message,'error');}};
- return <Modal title="Message actions" onClose={onClose}><div className="form-stack">
-  <Button variant="secondary" onClick={async()=>{try{await post(`/messages/${message.id}/reactions`,{emoji:'👍'});toast.show('Reaction added.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Add 👍 reaction</Button>
-  <Button variant="secondary" disabled={bookmarked===null} onClick={()=>void toggleBookmark()}><Bookmark size={15}/>{bookmarked===null?'Checking saved status…':bookmarked?'Remove saved message':'Save message'}</Button>
-  {!isDm&&<Button variant="secondary" onClick={async()=>{try{const r=await post<{pinned:boolean}>(`/messages/${message.id}/pin`);toast.show(r.pinned?'Message pinned.':'Message unpinned.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Pin or unpin</Button>}
-  {!isDm&&<Button variant="secondary" onClick={async()=>{const reason=window.prompt('Why are you reporting this message?');if(!reason)return;try{await post(`/messages/${message.id}/report`,{reason});toast.show('Report submitted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Report message</Button>}
-  {message.sender_id===user?.id&&<Button variant="danger" onClick={async()=>{if(!window.confirm('Delete this message?'))return;try{await del(`/messages/${message.id}`);toast.show('Message deleted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Delete message</Button>}
- </div></Modal>;
+ const submitForward=async()=>{const [type,id]=forwardSelection.split(':');if(!id||!type||forwardBusy)return;setForwardBusy(true);try{await post(`/messages/${message.id}/forward`,type==='dm'?{dmId:id}:{channelId:id});toast.show('Message forwarded.','success');setForwardOpen(false);onClose();}catch(error:any){toast.show(error.message,'error');}finally{setForwardBusy(false);}};
+ return <>
+  <Modal title="Message actions" onClose={onClose}><div className="form-stack">
+   <Button variant="secondary" onClick={async()=>{try{await post(`/messages/${message.id}/reactions`,{emoji:'👍'});toast.show('Reaction added.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Add 👍 reaction</Button>
+   <Button variant="secondary" onClick={()=>setForwardOpen(true)}><ForwardIcon size={15}/> Forward message</Button>
+   <Button variant="secondary" disabled={bookmarked===null} onClick={()=>void toggleBookmark()}><Bookmark size={15}/>{bookmarked===null?'Checking saved status…':bookmarked?'Remove saved message':'Save message'}</Button>
+   <Button variant="secondary" onClick={async()=>{try{await navigator.clipboard.writeText(message.content);toast.show('Message copied.','success');}catch{toast.show('Clipboard access is unavailable in this browser.','error');}}}>Copy message</Button>
+   {!isDm&&<Button variant="secondary" onClick={async()=>{try{const r=await post<{pinned:boolean}>(`/messages/${message.id}/pin`);toast.show(r.pinned?'Message pinned.':'Message unpinned.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Pin or unpin</Button>}
+   {!isDm&&<Button variant="secondary" onClick={async()=>{const reason=window.prompt('Why are you reporting this message?');if(!reason)return;try{await post(`/messages/${message.id}/report`,{reason});toast.show('Report submitted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Report message</Button>}
+   {message.sender_id===user?.id&&<Button variant="danger" onClick={async()=>{if(!window.confirm('Delete this message?'))return;try{await del(`/messages/${message.id}`);toast.show('Message deleted.','success');onClose();}catch(e:any){toast.show(e.message,'error');}}}>Delete message</Button>}
+  </div></Modal>
+  {forwardOpen&&<Modal title="Forward message" onClose={()=>setForwardOpen(false)}><div className="form-stack">
+    <p className="field-hint">Choose a direct conversation or a channel that you can access. Attachments are copied too.</p>
+    {forwardLoading?<Loading label="Loading destinations…"/>:forwardTargets.length?<label className="field"><span>Destination</span><select value={forwardSelection} onChange={event=>setForwardSelection(event.target.value)}>{forwardTargets.map(target=><option key={`${target.type}:${target.id}`} value={`${target.type}:${target.id}`}>{target.label}</option>)}</select></label>:<EmptyState title="No destinations available" description="Join a conversation or community before forwarding a message."/>}
+    <div className="modal-actions"><Button variant="secondary" onClick={()=>setForwardOpen(false)}>Cancel</Button><Button disabled={forwardLoading||!forwardSelection||forwardBusy} onClick={()=>void submitForward()}>{forwardBusy?'Forwarding…':'Forward message'}</Button></div>
+   </div></Modal>}
+ </>;
 }
 
 export function ChannelPage(){

@@ -10,6 +10,28 @@ const settingsNav=[['account','My account','Account information'],['profile','Pr
 export function SettingsPage(){
  const {section='account'}=useParams();const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const [settings,setSettings]=useState<any>({theme:'graphite',density:'comfortable',fontScale:100,reducedMotion:false,contrast:'normal',messageLayout:'cozy',sidebarWidth:292,messageRadius:12,fontFamily:'system',customTheme:{},keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'}});const [boost,setBoost]=useState<any>({active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false});const settingsRef=useRef(settings);const serverSettingsRef=useRef<any>(settings);const pendingSettingsRef=useRef<Array<{id:number;patch:any}>>([]);const settingsSaveQueueRef=useRef<Promise<void>>(Promise.resolve());const settingsSaveIdRef=useRef(0);const boostRef=useRef(boost);const [profile,setProfile]=useState<any>({});const [privacy,setPrivacy]=useState<any>({dm_privacy:'friends',activity_visible:true});const [blocks,setBlocks]=useState<any[]>([]);const [sessions,setSessions]=useState<any[]>([]);const [devices,setDevices]=useState<MediaDeviceInfo[]>([]);const [password,setPassword]=useState({currentPassword:'',newPassword:'',confirm:''});const [loading,setLoading]=useState(true);const [browserPermission,setBrowserPermission]=useState(typeof Notification!=='undefined'?Notification.permission:'default');
  useEffect(()=>{let active=true;setLoading(true);Promise.all([api<any>('/settings'),api<any>(`/profile/${user?.id}`),api<any>('/blocks'),api<any>('/sessions'),api<any>('/privacy')]).then(([s,p,b,ss,pr])=>{if(!active)return;serverSettingsRef.current=s.settings;settingsRef.current=s.settings;pendingSettingsRef.current=[];setSettings(s.settings);const entitlement=s.boost||{active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false};boostRef.current=entitlement;setBoost(entitlement);setProfile(p.user);setPrivacy({dm_privacy:pr.dm_privacy||'friends',activity_visible:!!pr.activity_visible});setBlocks(b.blocks);setSessions(ss.sessions);}).catch(e=>{if(active)toast.show(e.message,'error');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[user?.id]);
+ useEffect(()=>{
+  let active=true;
+  const refreshEntitlement=async()=>{
+   try{
+    const result=await api<any>('/settings');
+    if(!active)return;
+    const next=result.boost||{active:false,status:'inactive',checkoutConfigured:false,billingConfigured:false};
+    if(!!next.active!==!!boostRef.current?.active){
+     serverSettingsRef.current=result.settings;
+     settingsRef.current=result.settings;
+     pendingSettingsRef.current=[];
+     setSettings(result.settings);
+    }
+    boostRef.current=next;
+    setBoost(next);
+   }catch{/* Keep the last known entitlement when the API is temporarily unavailable. */}
+  };
+  const timer=window.setInterval(()=>void refreshEntitlement(),60000);
+  const onFocus=()=>{if(document.visibilityState==='visible')void refreshEntitlement();};
+  window.addEventListener('focus',onFocus);
+  return()=>{active=false;window.clearInterval(timer);window.removeEventListener('focus',onFocus);};
+ },[user?.id]);
  useEffect(()=>{applyRelayAppearance(settings,!!boost.active);},[settings,boost.active]);
  const mergeSettingPatch=(base:any,patch:any)=>({
   ...base,...patch,

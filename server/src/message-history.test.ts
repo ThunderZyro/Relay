@@ -30,3 +30,18 @@ test('keeps supplied cursor values parameterized and bounded', () => {
   assert.equal(cursor.params[0], timestamp);
   assert.equal(cursor.params[2].length, 128);
 });
+
+
+test('read receipts are limited to unread messages in the loaded page', async () => {
+  const { unreadMessagesForUser } = await import('./message-history.js');
+  const page = [
+    { id: 'recent-unread', sender_id: 'friend', read_by: [] },
+    { id: 'already-read', sender_id: 'friend', read_by: [{ user_id: 'me' }] },
+    { id: 'my-own-message', sender_id: 'me', read_by: [] },
+  ];
+  assert.deepEqual(
+    unreadMessagesForUser(page, 'me').map(message => message.id),
+    ['recent-unread']
+  );
+  // Older pages are not passed to the selector until the user loads them.
+});

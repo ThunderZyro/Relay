@@ -9,6 +9,16 @@ import {HomePage,FriendsPage,DiscoverPage,ProfilePage,InvitePage,EventsPage,Info
 import {ChannelPage,DmPage} from './pages/ChatPages';
 import {SettingsPage,ServerSettingsPage} from './pages/SettingsPages';
 
+
+function AuthBrandPanel({headline,description}:{headline:string;description:string}){
+ return <aside className="auth-story">
+  <Link to="/login" className="auth-brand" aria-label="Relay home"><span className="brand-mark"><img src="/relay-mark.svg" alt=""/></span><span>relay</span></Link>
+  <div className="auth-story-copy"><span className="auth-story-kicker"><i/> YOUR PEOPLE, IN ONE PLACE</span><h1>{headline}</h1><p>{description}</p></div>
+  <img className="auth-story-art" src="/relay-mascots.svg" alt="Three cheerful chat mascots around a message window"/>
+  <div className="auth-story-footer"><span>✦</span> Friends, messages, and communities — together.</div>
+ </aside>;
+}
+
 function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
  const {user,setUser,refresh}=useAuth();
  const navigate=useNavigate();
@@ -46,12 +56,8 @@ function AuthScreen({mode}:{mode:'login'|'register'|'forgot'}){
  };
 
  return <main className="auth-screen">
-  <div className="auth-simple">
-   <Link to="/login" className="auth-brand" aria-label="Relay home">
-    <span className="brand-mark">R</span><span>relay</span>
-   </Link>
-   <h1 className="auth-tagline">A friendly place to say hello.</h1>
-
+  <div className="auth-layout">
+   <AuthBrandPanel headline={isRegister?'Make your corner of Relay.':'Good to see you again.'} description={isRegister?'Create an account, meet your people, and build a place for the things you love.':'Your friends, conversations, and clubs are right where you left them.'}/>
    <section className="auth-form-side">
     <div className="auth-form-top">
      {isRegister ? 'Already part of Relay?' : isForgot ? 'Remember your password?' : 'New to Relay?'}
@@ -100,7 +106,7 @@ function PasswordRecovery({reset=false}:{reset?:boolean}){
   if(reset){const token=new URLSearchParams(window.location.search).get('token')||'';await post('/auth/reset-password',{token,password});toast.show('Password updated. Sign in with your new password.','success');navigate('/login');}
   else{const result=await post<{message:string}>('/auth/forgot-password',{email});setNotice(result.message||'If that email belongs to a Relay account, a reset link is on its way.');}
  }catch(err:any){setError(err.message||'Relay could not complete that request.');}finally{setBusy(false);}};
- return <main className="auth-screen"><div className="auth-simple"><Link to="/login" className="auth-brand"><span className="brand-mark">R</span><span>relay</span></Link><h1 className="auth-tagline">{reset?'Choose a new password.':'Get back into Relay.'}</h1><section className="auth-form-side"><div className="auth-form-top">Remembered it? <Link to="/login">Sign in</Link></div><div className="auth-card"><div className="auth-form-heading"><h1>{reset?'Reset your password':'Password recovery'}</h1><p>{reset?'Choose a new password for your Relay account.':recoveryConfigured===false?'Password recovery email is not enabled yet. Contact your Relay administrator for help.':recoveryConfigured===true?'We will email you a secure, one-time reset link.':'Checking whether password recovery is available…'}</p></div><form className="form-stack" onSubmit={submit}>{reset?<Field label="New password"><input type="password" autoComplete="new-password" minLength={10} maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 10 characters"/></Field>:<Field label="Account email"><input type="email" autoComplete="email" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></Field>}{error&&<div className="form-error" role="alert">{error}</div>}{notice&&<div className="form-success" role="status">{notice}</div>}<Button type="submit" disabled={busy}>{busy?'Please wait…':reset?'Update password':'Send reset link'} <ArrowRight size={16}/></Button></form></div></section></div></main>;
+ return <main className="auth-screen"><div className="auth-layout"><AuthBrandPanel headline={reset?'Choose a new password.':'Let’s get you back to your people.'} description="Your Relay account keeps your conversations, friends, and communities connected."/><section className="auth-form-side"><div className="auth-form-top">Remembered it? <Link to="/login">Sign in</Link></div><div className="auth-card"><div className="auth-form-heading"><h1>{reset?'Reset your password':'Password recovery'}</h1><p>{reset?'Choose a new password for your Relay account.':recoveryConfigured===false?'Password recovery email is not enabled yet. Contact your Relay administrator for help.':recoveryConfigured===true?'We will email you a secure, one-time reset link.':'Checking whether password recovery is available…'}</p></div><form className="form-stack" onSubmit={submit}>{reset?<Field label="New password"><input type="password" autoComplete="new-password" minLength={10} maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 10 characters"/></Field>:<Field label="Account email"><input type="email" autoComplete="email" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></Field>}{error&&<div className="form-error" role="alert">{error}</div>}{notice&&<div className="form-success" role="status">{notice}</div>}<Button type="submit" disabled={busy}>{busy?'Please wait…':reset?'Update password':'Send reset link'} <ArrowRight size={16}/></Button></form></div></section></div></main>;
 }
 
 function Protected(){const {user,loading}=useAuth();if(loading)return <Loading label="Checking session"/>;if(!user)return <Navigate to="/login" replace/>;return <Shell key={user.id}/>;}

@@ -25,10 +25,10 @@ export function HomePage(){
   <section className="home-hero">
    <div className="home-hero-copy">
     <div className="home-kicker"><span>✦</span> YOUR LITTLE CORNER OF RELAY</div>
-    <h1>Hey, {firstName}!</h1>
-    <p>This is your place to catch up, say hello, and find people who like the things you like.</p>
+    <h1>Welcome, {firstName}!</h1>
+    <p>Your messages, friends, and communities are all in one place.</p>
     <div className="home-hero-actions">
-     <Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open my chats</Link>
+     <Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open messages</Link>
      <Link className="home-quiet-link" to="/friends"><Users size={18}/> Meet my people <ArrowRight size={16}/></Link>
     </div>
     <div className="home-mini-counts">
@@ -37,14 +37,10 @@ export function HomePage(){
      <span><b>{dms.length}</b> {dms.length===1?'chat':'chats'}</span>
     </div>
    </div>
-   <div className="home-hero-art" aria-hidden="true">
-    <div className="hero-sun"/>
-    <div className="hero-scribble">✳</div>
-    <div className="hero-note hero-note-back"><span className="hero-note-pin"/>A good day<br/>to say hello.</div>
-    <div className="hero-note hero-note-front"><span className="hero-note-face">☺</span><b>Hey there!</b><small>Glad you're here.</small><span className="hero-note-dots">•••</span></div>
-    <div className="hero-orbit-dot"/>
-    <div className="hero-plant"><i/><i/><i/><b/></div>
-   </div>
+   <div className="home-hero-art">
+     <img className="relay-mascot-art" src="/relay-mascots.svg" alt="Three friendly Relay chat mascots"/>
+     <span className="hero-art-caption"><i/> Good conversations start here</span>
+    </div>
   </section>
   <div className="home-shortcut-row" aria-label="Quick places">
    <Link to="/discover" className="home-shortcut shortcut-clubs"><span className="shortcut-art"><Compass size={25}/><i>✳</i></span><span><b>Find a club</b><small>Explore new interests</small></span><ArrowRight size={18}/></Link>

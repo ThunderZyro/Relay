@@ -1417,7 +1417,10 @@ app.post('/api/notifications/read-all', requireAuth, (req: AuthedRequest,res) =>
 app.post('/api/notifications/:notificationId/read', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?').run(now(),req.params.notificationId,req.user!.id);res.json({ok:true});});
 app.get('/api/events', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? WHERE e.starts_at::timestamptz>=NOW() ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
-  res.json({events:rows});
+  res.json({events:rows.map((event:any)=>({
+    ...event,
+    can_manage:event.creator_id===req.user!.id||hasPermission(event.server_id,req.user!.id,'manage_server')
+  }))});
 });
 app.post('/api/servers/:serverId/events', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_server'))return fail(res,403,'You do not have permission to create events.');

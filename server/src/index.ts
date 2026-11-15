@@ -541,7 +541,11 @@ app.post('/api/blocks/:userId', requireAuth, asyncRoute(async (req,res) => {
   emitFriendUpdate(req.user!.id,req.params.userId);
   res.json({ok:true});
 }));
-app.delete('/api/blocks/:userId', requireAuth, (req: AuthedRequest,res) => { db.prepare('DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?').run(req.user!.id,req.params.userId); res.json({ok:true}); });
+app.delete('/api/blocks/:userId', requireAuth, asyncRoute(async (req,res) => {
+  db.prepare('DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?').run(req.user!.id,req.params.userId);
+  await Promise.all([req.user!.id,req.params.userId].map(refreshDirectMessageRoomAccess));
+  res.json({ok:true});
+}));
 
 function canMessageDmPeer(senderId: string, recipientId: string) {
   const recipient=db.prepare('SELECT dm_privacy FROM users WHERE id=?').get(recipientId) as any;

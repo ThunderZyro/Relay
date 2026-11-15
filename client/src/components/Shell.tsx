@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {Link,Outlet,useLocation,useNavigate} from 'react-router-dom';
 import {io} from 'socket.io-client';
-import {Activity, Archive, Bell, BellOff, Bookmark, CalendarDays, Compass, Download, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, MoreHorizontal, Pin, Plus, Search, Settings, Shield, Star, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus, ChevronDown} from 'lucide-react';
+import {Activity, Archive, Bell, BellOff, Bookmark, CalendarDays, Compass, Download, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, MoreHorizontal, Pin, Plus, Search, Settings, Shield, Star, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus, ChevronDown, Zap, ArrowRight} from 'lucide-react';
 import {api,apiOrigin,post,del} from '../api';
 import {useAuth,useToast,announceAuthChange} from '../state';
 import {Avatar,Button,Field,Modal,SearchInput} from './ui';
@@ -48,7 +48,7 @@ export default function Shell(){
   window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
  },[keybinds]);
  useEffect(()=>{const query=search.trim();if(query.length<2){setSearchResults(null);return;}let active=true;setSearchResults(null);const timer=window.setTimeout(()=>api(`/search?q=${encodeURIComponent(query)}`).then(result=>{if(active)setSearchResults(result);}).catch(()=>{if(active)setSearchResults(null);}),250);return()=>{active=false;window.clearTimeout(timer);};},[search]);
- const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Plus';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname==='/channels/@me'||location.pathname.startsWith('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
+ const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Boost';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname==='/channels/@me'||location.pathname.startsWith('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
  const createServer=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await post<{server:Server;channelId:string}>('/servers',{name:serverName,description:serverDescription});setCreateOpen(false);setServerName('');setServerDescription('');await load();navigate(`/channels/${r.server.id}/${r.channelId}`);toast.show('Your club is ready.','success');}catch(e:any){toast.show(e.message,'error');}};
  const logout=async()=>{try{await post('/auth/logout');setUser(null);announceAuthChange();navigate('/login');}catch(e:any){toast.show(e.message,'error');}};
  const markAll=async()=>{try{await post('/notifications/read-all');setNotifications(v=>v.map(n=>({...n,read_at:new Date().toISOString()})));}catch(e:any){toast.show(e.message,'error');}};
@@ -96,6 +96,12 @@ export default function Shell(){
      <div className="side-top"><Link to="/home" className="brand"><span className="brand-mark"><img src="/relay-mark.svg" alt=""/></span><span>relay</span></Link><button className="mobile-close icon-btn" onClick={()=>setMobileNav(false)} aria-label="Close navigation"><X size={19}/></button></div>
      {activeServer&&serverInfo?.server?<>
        <div className="server-heading"><div><strong>{serverInfo.server.name}</strong><small>{serverInfo.server.description||'Your club'}</small></div><button className="icon-btn" title="Club settings" onClick={()=>navigate(`/server/${activeServer}/settings/overview`)}><Settings size={17}/></button></div>
+       <nav className="server-global-links" aria-label="Quick navigation">
+         <Link to="/channels/@me" className="side-item" onClick={()=>setMobileNav(false)}><MessageCircle size={16}/> Chats</Link>
+         <Link to="/friends" className="side-item" onClick={()=>setMobileNav(false)}><Users size={16}/> Friends</Link>
+         <Link to="/events" className="side-item" onClick={()=>setMobileNav(false)}><CalendarDays size={16}/> Events</Link>
+         <Link to="/inbox" className="side-item" onClick={()=>setMobileNav(false)}><Bell size={16}/> Inbox</Link>
+       </nav>
        <div className="side-scroll server-sidebar-scroll">
          <div className="channel-nav-title"><span>CHANNELS</span>{canManageChannels&&<button onClick={()=>navigate(`/server/${activeServer}/settings/channels`)} aria-label="Manage channels" title="Manage channels"><Plus size={15}/></button>}</div>
          {(serverInfo.categories||[]).map((cat:any)=><details className="channel-category" key={cat.id} open><summary><ChevronDown size={13}/><span>{cat.name}</span>{canManageChannels&&<button onClick={e=>{e.preventDefault();navigate(`/server/${activeServer}/settings/channels`);}} aria-label={`Add channel to ${cat.name}`}><Plus size={13}/></button>}</summary>{(serverInfo.channels||[]).filter((c:any)=>c.category_id===cat.id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?<Volume2 size={15}/>:c.type==='announcement'?<Megaphone size={15}/>:<Hash size={15}/>}</span>{c.name}</Link>)}</details>)}
@@ -111,6 +117,8 @@ export default function Shell(){
          <Link to="/channels/@me" className={`side-item ${location.pathname.startsWith('/channels/@me')?'selected':''}`} onClick={()=>setMobileNav(false)}><MessageCircle size={17}/> Chats</Link>
          <Link to="/friends" className={`side-item ${location.pathname==='/friends'?'selected':''}`} onClick={()=>setMobileNav(false)}><Users size={17}/> Friends</Link>
          <Link to="/discover" className={`side-item ${location.pathname==='/discover'?'selected':''}`} onClick={()=>setMobileNav(false)}><Compass size={17}/> Explore</Link>
+         <Link to="/events" className={`side-item ${location.pathname==='/events'?'selected':''}`} onClick={()=>setMobileNav(false)}><CalendarDays size={17}/> Events</Link>
+         <Link to="/inbox" className={`side-item ${location.pathname==='/inbox'?'selected':''}`} onClick={()=>setMobileNav(false)}><Bell size={17}/> Inbox</Link>
        </div>
        <div className="dm-heading"><div><span>MESSAGES</span><small>{dms.length} conversations</small></div><Link to="/friends" className="dm-new-message" aria-label="Start a new chat" title="Start a new chat"><MessageSquarePlus size={16}/><span>New</span></Link></div>
        <div className="dm-tools">
@@ -146,13 +154,16 @@ export default function Shell(){
        <details className="side-more">
          <summary>More places</summary>
          <div className="side-more-links">
-           <Link to="/events"><CalendarDays size={15}/> Events</Link>
-           <Link to="/inbox"><Bell size={15}/> Inbox</Link>
            <Link to="/bookmarks"><Bookmark size={15}/> Saved messages</Link>
            <Link to="/library"><Library size={15}/> Library</Link>
          </div>
        </details>
      </>}
+     <Link to="/premium" className={`sidebar-boost ${location.pathname.startsWith('/premium')?'active':''}`} onClick={()=>setMobileNav(false)} aria-label="Open Relay Boost">
+       <span className="sidebar-boost-icon"><Zap size={18}/></span>
+       <span className="sidebar-boost-copy"><strong>Boost Relay</strong><small>Support Relay and unlock perks</small></span>
+       <ArrowRight className="sidebar-boost-arrow" size={16}/>
+     </Link>
      <div className="user-panel"><Avatar name={user?.username||'User'} src={user?.avatar} size="md" presence={user?.presence}/><div className="user-meta"><strong>{user?.username}</strong><small>{user?.presence||'offline'}</small></div><button className="icon-btn" onClick={logout} title="Log out" aria-label="Log out"><LogOut size={17}/></button><button className="icon-btn" onClick={()=>navigate('/settings/account')} title="User settings" aria-label="User settings"><Settings size={17}/></button></div>
    </aside>
    <main className="main-area">

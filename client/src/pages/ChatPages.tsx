@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
-import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Forward as ForwardIcon, Hash, Images, MessageCircle, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound, Vote } from 'lucide-react';
+import { ArrowLeft, Bell, Bookmark, Camera, Check, FilePlus2, Forward as ForwardIcon, Hash, Images, MessageCircle, Mic, MonitorUp, MoreHorizontal, Paperclip, Pin, Reply, Send, Smile, Square, Users, Volume2, VolumeX, Edit3, X, Search, MessageSquarePlus, UsersRound, Vote } from 'lucide-react';
 import { api, apiOrigin, post, patch, del } from '../api';
 import { useAuth, useToast } from '../state';
 import { Avatar, Button, EmptyState, Loading, Modal } from '../components/ui';
@@ -63,7 +63,7 @@ function renderFormattedMessage(content:string):React.ReactNode{
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
  'image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain',
- 'application/zip','audio/mpeg','audio/ogg','video/mp4'
+ 'application/zip','audio/mpeg','audio/ogg','audio/webm','video/mp4'
 ]);
 const BLOCKED_ATTACHMENT_EXTENSIONS = new Set(['.exe','.bat','.cmd','.js','.html','.svg','.sh','.ps1']);
 type RoomServer = { server:{id:string;name:string;description?:string}; channels:any[]; members:any[]; categories:any[] };
@@ -123,6 +123,8 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
  const {user}=useAuth();const draftKey=`relay:draft:${user?.id||'guest'}:${isDm?'dm':'channel'}:${conversationId}`;
  const [content,setContent]=useState(()=>{try{return window.localStorage.getItem(draftKey)||'';}catch{return '';}});const [busy,setBusy]=useState(false);
  useEffect(()=>{try{if(content)window.localStorage.setItem(draftKey,content);else window.localStorage.removeItem(draftKey);}catch{/* Draft saving is best effort when browser storage is restricted. */}},[content,draftKey]);const [files,setFiles]=useState<File[]>([]);const fileRef=useRef<HTMLInputElement>(null);const textareaRef=useRef<HTMLTextAreaElement>(null);const toast=useToast();const typingTarget=isDm?{dmId:conversationId}:{channelId:conversationId};
+ const [recording,setRecording]=useState(false);const recorderRef=useRef<MediaRecorder|null>(null);const mediaStreamRef=useRef<MediaStream|null>(null);const audioChunksRef=useRef<Blob[]>([]);const mountedRef=useRef(true);
+ useEffect(()=>{mountedRef.current=true;return()=>{mountedRef.current=false;const recorder=recorderRef.current;if(recorder&&recorder.state!=='inactive'){recorder.onstop=null;recorder.stop();}mediaStreamRef.current?.getTracks().forEach(track=>track.stop());};},[]);
  const [pollOpen,setPollOpen]=useState(false);const [pollQuestion,setPollQuestion]=useState('');const [pollOptions,setPollOptions]=useState(['','']);const [pollMultiple,setPollMultiple]=useState(false);const [pollDuration,setPollDuration]=useState('168');const [pollBusy,setPollBusy]=useState(false);
  const send=async(e?:React.FormEvent)=>{e?.preventDefault();socket?.emit('typing:stop',typingTarget);if((!content.trim()&&!files.length)||busy)return;setBusy(true);try{
   let uploadIds:string[]=[];
@@ -130,9 +132,12 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
   const route=isDm?`/dms/${conversationId}/messages`:`/channels/${conversationId}/messages`;
   const result=await post<{message:ChatMessage}>(route,{content:content.trim(),reply_to:reply?.id,uploadIds});onSent(result.message);setContent('');if(textareaRef.current)textareaRef.current.style.height='auto';setFiles([]);clearReply();
  }catch(err:any){toast.show(err.message,'error');}finally{setBusy(false);}};
+ const startVoiceNote=async()=>{if(typeof MediaRecorder==='undefined'||!navigator.mediaDevices?.getUserMedia){toast.show('Voice recording is not supported in this browser.','error');return;}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});mediaStreamRef.current=stream;const mimeType=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/webm','audio/ogg'].find(type=>MediaRecorder.isTypeSupported(type));const recorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);audioChunksRef.current=[];recorder.ondataavailable=event=>{if(event.data.size)audioChunksRef.current.push(event.data);};recorder.onerror=()=>toast.show('Voice recording failed. Try again.','error');recorder.onstop=()=>{const chunks=audioChunksRef.current;audioChunksRef.current=[];const actualType=recorder.mimeType.toLowerCase().startsWith('audio/ogg')?'audio/ogg':'audio/webm';const blob=new Blob(chunks,{type:actualType});stream.getTracks().forEach(track=>track.stop());if(mountedRef.current){mediaStreamRef.current=null;recorderRef.current=null;setRecording(false);if(blob.size>MAX_UPLOAD_BYTES){toast.show('This voice note is over the 10 MB limit. Record a shorter note.','error');return;}if(blob.size){const file=new File([blob],`voice-note-${Date.now()}.${actualType==='audio/ogg'?'ogg':'webm'}`,{type:actualType});setFiles(current=>{if(current.length>=8){toast.show('A message can contain up to 8 files.','error');return current;}return [...current,file];});}}};recorderRef.current=recorder;recorder.start(500);setRecording(true);}catch(error:any){mediaStreamRef.current?.getTracks().forEach(track=>track.stop());mediaStreamRef.current=null;toast.show(error.name==='NotAllowedError'?'Allow microphone access to record a voice note.':error.message||'Could not start voice recording.','error');}};
+ const stopVoiceNote=()=>{const recorder=recorderRef.current;if(recorder&&recorder.state==='recording')recorder.stop();};
  const createPoll=async(e?:React.FormEvent)=>{e?.preventDefault();const question=pollQuestion.trim();const options=pollOptions.map(option=>option.trim()).filter(Boolean);if(question.length<3){toast.show('Write a poll question first.','error');return;}if(options.length<2){toast.show('Add at least two poll options.','error');return;}if(new Set(options.map(option=>option.toLocaleLowerCase())).size!==options.length){toast.show('Poll options must be unique.','error');return;}setPollBusy(true);try{const route=isDm?`/dms/${conversationId}/messages`:`/channels/${conversationId}/messages`;const result=await post<{message:ChatMessage}>(route,{content:question,poll:{options,allowMultiple:pollMultiple,durationHours:Number(pollDuration)}});onSent(result.message);setPollOpen(false);setPollQuestion('');setPollOptions(['','']);setPollMultiple(false);setPollDuration('168');}catch(error:any){toast.show(error.message,'error');}finally{setPollBusy(false);}};
  return <><div className="composer-wrap">
   {reply&&<div className="reply-banner"><Reply size={13}/> Replying to {reply.username}: {reply.content.slice(0,90)}<button onClick={clearReply} aria-label="Cancel reply"><X size={13}/></button></div>}
+  {recording&&<div className="voice-recording-note"><span/> Recording voice note · press stop when finished</div>}
   {files.length>0&&<div className="file-chips">{files.map((f,i)=><span key={`${f.name}-${i}`}>{f.name}<button onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))}><X size={12}/></button></span>)}</div>}
   <form className="composer" onSubmit={send}>
    <input ref={fileRef} type="file" multiple hidden accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,application/zip,audio/mpeg,audio/ogg,video/mp4" onChange={e=>{
@@ -151,6 +156,7 @@ function ChatComposer({ conversationId, isDm, socket, onSent, reply, clearReply 
     e.currentTarget.value = '';
    }}/>
    <button className="composer-icon" type="button" title="Attach file" onClick={()=>fileRef.current?.click()}><Paperclip size={18}/></button>
+   <button className={`composer-icon ${recording?'recording':''}`} type="button" title={recording?'Stop voice note':'Record voice note'} onClick={()=>recording?stopVoiceNote():void startVoiceNote()}>{recording?<Square size={17}/>:<Mic size={18}/>}</button>
    <button className="composer-icon" type="button" title="Create poll" onClick={()=>setPollOpen(true)}><Vote size={18}/></button>
    <textarea ref={textareaRef} rows={1} value={content} onChange={e=>{setContent(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,144)}px`;socket?.emit(e.target.value.trim()?'typing:start':'typing:stop',typingTarget);}} onBlur={()=>socket?.emit('typing:stop',typingTarget)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void send();}}} placeholder="Write a message… Supports Markdown formatting" maxLength={4000}/>
    <button className="composer-send" type="submit" disabled={busy||(!content.trim()&&!files.length)} title="Send"><Send size={16}/></button>

@@ -73,7 +73,10 @@ app.use(cors({
 }));
 
 /* Stripe must receive the exact raw body to verify its signature. */
-app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }), asyncRoute(async (req: Request,res: Response) => {
+const webhookAsyncRoute=(fn:(req:Request,res:Response)=>Promise<unknown>) =>
+  (req:Request,res:Response,next:NextFunction)=>{void Promise.resolve(fn(req,res)).catch(next);};
+
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }), webhookAsyncRoute(async (req: Request,res: Response) => {
   const secret=process.env.STRIPE_WEBHOOK_SECRET?.trim();
   if(!secret)return res.status(503).json({error:'Stripe Boost webhooks are not configured.'});
   const payload=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);

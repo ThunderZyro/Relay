@@ -68,45 +68,24 @@ export function FriendsPage(){
 }
 
 export function DiscoverPage(){
- const [q,setQ]=useState('');
- const [servers,setServers]=useState<any[]>([]);
- const [joined,setJoined]=useState<string[]>([]);
- const [loading,setLoading]=useState(true);
- const toast=useToast();
- const navigate=useNavigate();
- useEffect(()=>{
-  let active=true;
-  const timer=window.setTimeout(()=>{
-   setLoading(true);
-   api('/discover?q='+encodeURIComponent(q))
-    .then((r:any)=>{if(active)setServers(r.servers);})
-    .catch((e:any)=>{if(active)toast.show(e.message,'error');})
-    .finally(()=>{if(active)setLoading(false);});
-  },220);
-  return()=>{
-   active=false;
-   window.clearTimeout(timer);
-  };
- },[q]);
- const join=async(id:string)=>{
-  try{await post('/servers/'+id+'/join');setJoined(v=>[...v,id]);toast.show('You joined the club.','success');navigate('/channels/'+id);}
-  catch(e:any){toast.show(e.message,'error');}
- };
+ const [q,setQ]=useState('');const [sort,setSort]=useState<'popular'|'newest'|'active'>('popular');const [category,setCategory]=useState('All');
+ const [servers,setServers]=useState<any[]>([]);const [joined,setJoined]=useState<string[]>([]);const [loading,setLoading]=useState(true);const [preview,setPreview]=useState<any>(null);const [previewLoading,setPreviewLoading]=useState(false);
+ const toast=useToast();const navigate=useNavigate();
+ useEffect(()=>{let active=true;const timer=window.setTimeout(()=>{setLoading(true);api('/discover?q='+encodeURIComponent(q)+'&sort='+sort).then((r:any)=>{if(active)setServers(r.servers||[]);}).catch((e:any)=>{if(active){setServers([]);toast.show(e.message,'error');}}).finally(()=>{if(active)setLoading(false);});},220);return()=>{active=false;window.clearTimeout(timer);};},[q,sort]);
+ const categories=['All','Gaming','Anime','Technology','Art','Music','Education'];
+ const keywords:Record<string,string[]>={Gaming:['game','gaming','minecraft','roblox','fortnite','valorant','playstation','xbox'],Anime:['anime','manga','otaku','cosplay'],Technology:['technology','tech','coding','programming','developer','computer','ai'],Art:['art','draw','drawing','design','creative','animation'],Music:['music','song','band','instrument','producer'],Education:['study','school','learn','education','homework','science','math']};
+ const visibleServers=useMemo(()=>{const list=servers.filter((s:any)=>category==='All'||keywords[category].some(word=>(String(s.name||'')+' '+String(s.description||'')).toLowerCase().includes(word)));return [...list].sort((a:any,b:any)=>sort==='newest'?new Date(b.created_at).getTime()-new Date(a.created_at).getTime():sort==='active'?new Date(b.last_active_at||b.created_at).getTime()-new Date(a.last_active_at||a.created_at).getTime():Number(b.member_count||0)-Number(a.member_count||0));},[servers,category,sort]);
+ const loadPreview=async(id:string)=>{setPreview(null);setPreviewLoading(true);try{const result=await api<any>('/discover/'+id);setPreview(result.community);}catch(error:any){toast.show(error.message,'error');}finally{setPreviewLoading(false);}};
+ const join=async(id:string)=>{try{await post('/servers/'+id+'/join');setJoined(v=>[...v,id]);toast.show('You joined the club.','success');setPreview(null);navigate('/channels/'+id);}catch(e:any){toast.show(e.message,'error');}};
  return <div className="page-content clubhouse-discover">
-  <section className="clubs-intro">
-   <div><span className="clubs-kicker">AROUND THE NEIGHBOURHOOD</span><h1>Find your kind of people.</h1><p>There are lots of little communities to explore. Look for one that shares your favourite things.</p></div>
-   <div className="clubs-intro-art" aria-hidden="true"><span className="clubs-art-sun">✳</span><span className="clubs-art-house">⌂</span><span className="clubs-art-star">✦</span><span className="clubs-art-line"/></div>
-  </section>
-  <div className="clubs-search-bar"><SearchInput value={q} onChange={setQ} placeholder="What are you interested in?"/><span>{servers.length} {servers.length===1?'club':'clubs'} to explore</span></div>
-  {loading?<Loading label="Looking around…"/>:servers.length?
-   <div className="clubs-grid">{servers.map((s:any,index:number)=><article className={'club-card club-card-'+(index%5)} key={s.id}>
-    <div className={'club-art club-art-'+(index%5)} aria-hidden="true"><span className="club-art-initial">{(s.name||'R').slice(0,1).toUpperCase()}</span><i className="club-art-shape club-art-shape-one"/><i className="club-art-shape club-art-shape-two"/><span className="club-art-spark">✳</span><span className="club-art-ribbon">A PLACE TO BELONG</span></div>
-    <div className="club-card-content"><div className="club-card-overline"><span>COMMUNITY CLUB</span><span><Users size={14}/>{s.member_count||0}</span></div><h2>{s.name}</h2><p>{s.description||'A friendly community on Relay. Come and have a look around.'}</p><div className="club-card-bottom"><span><Globe size={14}/> Public club</span><Button disabled={joined.includes(s.id)} onClick={()=>void join(s.id)}>{joined.includes(s.id)?'You joined':'Join this club'} <ArrowRight size={15}/></Button></div></div>
-   </article>)}</div>
-   :<div className="clubs-empty"><span>⌕</span><h2>No clubs found</h2><p>Try a different word, or come back and explore again.</p></div>}
+  <section className="clubs-intro"><div><span className="clubs-kicker">AROUND THE NEIGHBOURHOOD</span><h1>Find your kind of people.</h1><p>Explore communities by interest, see what they’re about, and find a place to belong.</p></div><div className="clubs-intro-art" aria-hidden="true"><span className="clubs-art-sun">✳</span><span className="clubs-art-house">⌂</span><span className="clubs-art-star">✦</span><span className="clubs-art-line"/></div></section>
+  <div className="clubs-search-bar"><SearchInput value={q} onChange={setQ} placeholder="Search communities and interests…"/><span>{visibleServers.length} {visibleServers.length===1?'club':'clubs'}</span></div>
+  <div className="discover-controls"><div className="discover-categories" role="group" aria-label="Community categories">{categories.map(item=><button key={item} className={category===item?'active':''} onClick={()=>setCategory(item)}>{item}</button>)}</div><label className="discover-sort"><span>Sort by</span><select value={sort} onChange={e=>setSort(e.target.value as any)}><option value="popular">Popular</option><option value="active">Recently active</option><option value="newest">Newest</option></select></label></div>
+  {loading?<Loading label="Looking around…"/>:visibleServers.length?<div className="clubs-grid">{visibleServers.map((s:any,index:number)=><article className={'club-card club-card-'+(index%5)} key={s.id}><div className={'club-art club-art-'+(index%5)} aria-hidden="true"><span className="club-art-initial">{(s.name||'R').slice(0,1).toUpperCase()}</span><i className="club-art-shape club-art-shape-one"/><i className="club-art-shape club-art-shape-two"/><span className="club-art-spark">✳</span><span className="club-art-ribbon">A PLACE TO BELONG</span></div><div className="club-card-content"><div className="club-card-overline"><span>COMMUNITY CLUB</span><span><Users size={14}/>{s.member_count||0}</span></div><h2>{s.name}</h2><p>{s.description||'A friendly community on Relay. Come and have a look around.'}</p><div className="club-card-bottom"><span><Globe size={14}/> Public club</span><div className="club-card-actions"><Button variant="secondary" onClick={()=>void loadPreview(s.id)}>Preview</Button><Button disabled={joined.includes(s.id)} onClick={()=>void join(s.id)}>{joined.includes(s.id)?'You joined':'Join'} <ArrowRight size={15}/></Button></div></div></div></article>)}</div>:<div className="clubs-empty"><span>⌕</span><h2>No clubs found</h2><p>Try another search or interest category.</p><Button variant="secondary" onClick={()=>{setQ('');setCategory('All');}}>Clear filters</Button></div>}
+  {previewLoading&&<Modal title="Community preview" onClose={()=>setPreviewLoading(false)}><Loading label="Loading community preview…"/></Modal>}
+  {preview&&!previewLoading&&<Modal title="Community preview" onClose={()=>setPreview(null)}><div className="community-preview"><span className="clubs-kicker">PUBLIC COMMUNITY</span><h2>{preview.name}</h2><p>{preview.description||'A friendly Relay community. Join to see its channels and meet its members.'}</p><div className="community-preview-stats"><span><Users size={16}/>{preview.member_count} members</span><span><Hash size={16}/>{preview.channel_count} text channels</span></div><Button block onClick={()=>void join(preview.id)}>Join this community <ArrowRight size={15}/></Button></div></Modal>}
  </div>;
 }
-
 export function ProfilePage(){
  const {userId}=useParams();const {user:me}=useAuth();const toast=useToast();const navigate=useNavigate();const [profile,setProfile]=useState<any>(null);const [blocked,setBlocked]=useState(false);const [loading,setLoading]=useState(true);const [friends,setFriends]=useState<any[]>([]);const [editOpen,setEditOpen]=useState(false);const [form,setForm]=useState<any>({});
  const own=userId===me?.id;
@@ -163,8 +142,7 @@ export function InboxPage(){
  const markAll=async()=>{try{await post('/notifications/read-all');setItems(v=>v.map(n=>({...n,read_at:new Date().toISOString()})));}catch(e:any){toast.show(e.message,'error');}};
  return <div className="page-content"><PageHeader title="Inbox" subtitle="Your recent mentions, DMs, friend requests, and community updates." actions={<Button variant="secondary" onClick={()=>void markAll()}><Check size={15}/> Mark all read</Button>}/><div className="tabs"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>All activity</button><button className={filter==='mentions'?'active':''} onClick={()=>setFilter('mentions')}>Mentions</button><button className={filter==='other'?'active':''} onClick={()=>setFilter('other')}>Other</button></div>{visible.length?visible.map(n=><Link to={n.href} key={n.id} className={`inbox-row ${n.read_at?'read':''}`} onClick={async()=>{if(!n.read_at){await post(`/notifications/${n.id}/read`);setItems(v=>v.map(x=>x.id===n.id?{...x,read_at:new Date().toISOString()}:x));}}}><span className="notification-dot"/><div><b>{n.title}</b><p>{n.body}</p><time>{new Date(n.created_at).toLocaleString()}</time></div></Link>):<EmptyState title="Nothing here yet" description="New activity will appear here when someone messages, mentions, invites, or adds you." icon={Activity}/>}</div>;
 }
-export function HelpPage(){return <div className="page-content"><PageHeader title="Relay help" subtitle="A quick guide to this local community app."/><div className="help-grid">{[['Getting started','Create an account, then join a public community from Discover or create your own server.'],['Channels and messages','Text channels support messages, replies, edits, reactions, pins, search, and local attachments. Enter sends; Shift+Enter adds a new line.'],['Friends and DMs','Send friend requests by exact username. Incoming and outgoing are shown from the currently signed-in account. Browser tabs share one session cookie, so use separate browser profiles to test two accounts at once. Direct messages respect privacy settings.'],['Voice and screen sharing','Join a voice channel to request microphone access. Camera and screen sharing require browser permissions and HTTPS outside localhost. Peer connections may fail without TURN.'],['Account and safety','Manage password, sessions, blocks, privacy, notifications, appearance, accessibility, and keybind preferences in Settings.'],['Demo boundaries','No email provider, payment processor, external OAuth, or hosted push service is configured. Plus and Shop are informational only.']] .map(([title,body])=><article className="help-card" key={title}><h3>{title}</h3><p>{body}</p></article>)}</div></div>;}
-
+export function HelpPage(){return <div className="page-content"><PageHeader title="Relay help" subtitle="A quick guide to your communities and conversations."/><div className="help-grid">{[['Getting started','Set up your profile, add a friend, join or create a community, and send your first message.'],['Channels and messages','Text channels support messages, replies, edits, reactions, pins, search, saved drafts, attachments, and shared-media browsing. Enter sends; Shift+Enter adds a new line.'],['Friends and DMs','Send friend requests by exact username. Incoming and outgoing requests appear in Friends. Direct messages respect current privacy and block settings, and show read receipts.'],['Voice','Voice channels currently support microphone audio. Camera and screen sharing are not available yet. TURN relay settings may be needed for restrictive networks.'],['Account and safety','Manage your password, sessions, blocks, privacy, notifications, appearance, accessibility, and keybind preferences in Settings.'],['Service setup','Hosted attachments require S3-compatible storage credentials. Password recovery requires an email provider. Relay Plus and Shop are previews; no payments are processed.']].map(([title,body])=><article className="help-card" key={title}><h3>{title}</h3><p>{body}</p></article>)}</div></div>;}
 export function EventsPage(){
  const toast=useToast();const {user}=useAuth();const [events,setEvents]=useState<any[]>([]);const [servers,setServers]=useState<any[]>([]);const [modalOpen,setModalOpen]=useState(false);const [editing,setEditing]=useState<any>(null);const [form,setForm]=useState<any>({serverId:'',title:'',description:'',starts_at:'',location:''});const [loading,setLoading]=useState(true);const [saving,setSaving]=useState(false);
  const load=async()=>{try{const [e,s]=await Promise.all([api<any>('/events'),api<any>('/servers')]);setEvents(e.events);setServers(s.servers);if(!form.serverId&&s.servers[0])setForm((f:any)=>({...f,serverId:s.servers[0].id}));}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};

@@ -1264,7 +1264,7 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
   } else {
     if(!canAccessDm(destination.dmId!,req.user!.id))return fail(res,403,'You cannot access this conversation.');
   }
-  if(p.data.reply_to){const parent=db.prepare('SELECT channel_id,dm_id FROM messages WHERE id=?').get(p.data.reply_to) as any;if(!parent || parent.channel_id!==(destination.channelId||null) || parent.dm_id!==(destination.dmId||null))return fail(res,400,'The replied-to message is not in this conversation.');}
+  if(p.data.reply_to){const parent=db.prepare('SELECT channel_id,dm_id FROM messages WHERE id=? AND deleted_at IS NULL').get(p.data.reply_to) as any;if(!parent || parent.channel_id!==(destination.channelId||null) || parent.dm_id!==(destination.dmId||null))return fail(res,400,'The replied-to message is not in this conversation.');}
   const mid=id();
   const created=db.transaction(()=>{
     if(destination.channelId){
@@ -1339,7 +1339,7 @@ app.post('/api/polls/:pollId/vote', requireAuth, interactionLimiter, (req:Authed
 app.post('/api/channels/:channelId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{channelId:req.params.channelId}));
 app.post('/api/dms/:dmId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{dmId:req.params.dmId}));
 app.patch('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   let canAccess=false; let serverId:string|null=null;
   if(m.channel_id){const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any;serverId=channel?.server_id||null;canAccess=!!serverId&&canReadChannel(m.channel_id,req.user!.id);}
   else if(m.dm_id){canAccess=canAccessDm(m.dm_id,req.user!.id);}
@@ -1349,7 +1349,7 @@ app.patch('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
   db.prepare('UPDATE messages SET content=?,edited_at=? WHERE id=?').run(p.data.content,now(),m.id); const row=messageRows('m.id=?',[m.id],1,req.user!.id)[0]; io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:updated',row); res.json({message:row});
 });
 app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   const serverId=m.channel_id?(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any)?.server_id:null;
   const canAccess=m.channel_id?canReadChannel(m.channel_id,req.user!.id):canAccessDm(m.dm_id,req.user!.id);
   if(!canAccess)return fail(res,403,'Conversation access is required.');
@@ -1360,7 +1360,7 @@ app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) =
   db.prepare('UPDATE messages SET deleted_at=?,content=? WHERE id=?').run(now(),'This message was deleted.',m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:deleted',{id:m.id}); res.json({ok:true});
 }));
 app.post('/api/messages/:messageId/report', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(!m.channel_id)return fail(res,400,'Only server-channel messages can be submitted to a server moderation queue.'); if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.' );
   const p=z.object({reason:z.string().trim().min(5).max(500)}).safeParse(req.body); if(!p.success)return fail(res,400,'Explain the concern in at least 5 characters.');
   const report = db.prepare('INSERT INTO message_reports(id,message_id,reporter_id,reason) VALUES(?,?,?,?) ON CONFLICT(message_id,reporter_id) DO NOTHING').run(id(),m.id,req.user!.id,p.data.reason);
@@ -1375,7 +1375,7 @@ app.post('/api/reports/:reportId/resolve', requireAuth, (req: AuthedRequest,res)
   const report=db.prepare(`SELECT r.id,c.server_id FROM message_reports r JOIN messages m ON m.id=r.message_id JOIN channels c ON c.id=m.channel_id WHERE r.id=?`).get(req.params.reportId) as any; if(!report)return fail(res,404,'Report not found.'); if(!hasPermission(report.server_id,req.user!.id,'manage_messages'))return fail(res,403,'You do not have permission.'); db.prepare("UPDATE message_reports SET status='resolved' WHERE id=?").run(report.id); res.json({ok:true});
 });
 app.post('/api/messages/:messageId/reactions', requireAuth, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(m.channel_id && !canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
   if(m.channel_id){
     const serverId=(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any)?.server_id;
@@ -1388,7 +1388,7 @@ app.post('/api/messages/:messageId/reactions', requireAuth, (req: AuthedRequest,
   const reactions=db.prepare('SELECT emoji,user_id FROM reactions WHERE message_id=?').all(m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:reactions',{messageId:m.id,reactions}); res.json({reactions});
 });
 app.post('/api/messages/:messageId/pin', requireAuth, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m || !m.channel_id)return fail(res,404,'Channel message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m || !m.channel_id)return fail(res,404,'Channel message not found.');
   const serverId=(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any).server_id;
   if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
   if(!hasPermission(serverId,req.user!.id,'pin_messages'))return fail(res,403,'You do not have permission to pin messages.');
@@ -1417,10 +1417,20 @@ app.post('/api/notifications/read-all', requireAuth, (req: AuthedRequest,res) =>
 app.post('/api/notifications/:notificationId/read', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?').run(now(),req.params.notificationId,req.user!.id);res.json({ok:true});});
 app.get('/api/events', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? WHERE e.starts_at::timestamptz>=NOW() ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
-  res.json({events:rows.map((event:any)=>({
-    ...event,
-    can_manage:event.creator_id===req.user!.id||hasPermission(event.server_id,req.user!.id,'manage_server')
-  }))});
+  const memberships=db.prepare(`SELECT s.id,s.owner_id,r.permissions FROM memberships m
+    JOIN servers s ON s.id=m.server_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.user_id=?`).all(req.user!.id) as any[];
+  const createServerIds=memberships.filter(item=>{
+    if(item.owner_id===req.user!.id)return true;
+    try{return (JSON.parse(item.permissions||'[]') as string[]).includes('manage_server');}
+    catch{return false;}
+  }).map(item=>item.id);
+  res.json({
+    events:rows.map((event:any)=>({
+      ...event,
+      can_manage:event.creator_id===req.user!.id||hasPermission(event.server_id,req.user!.id,'manage_server')
+    })),
+    create_server_ids:createServerIds
+  });
 });
 app.post('/api/servers/:serverId/events', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_server'))return fail(res,403,'You do not have permission to create events.');

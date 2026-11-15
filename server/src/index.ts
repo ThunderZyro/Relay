@@ -1010,12 +1010,12 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 
 // Messages and search
 function messageRows(whereSql:string, params:any[], limit=60) {
-  return db.prepare(`SELECT m.*,u.username,u.avatar,
+  return db.prepare(`SELECT m.*,u.username,u.avatar,forwarded_user.username AS forwarded_from_username,
     (SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions,
     (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments,
     (SELECT COALESCE(json_agg(json_build_object('user_id',mr.user_id,'username',reader.username,'read_at',mr.read_at))::text,'[]')
       FROM message_reads mr JOIN users reader ON reader.id=mr.user_id WHERE mr.message_id=m.id) read_by
-    FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC,m.id DESC LIMIT ?`)
+    FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN users forwarded_user ON forwarded_user.id=m.forwarded_from_user_id WHERE ${whereSql} ORDER BY m.created_at DESC,m.id DESC LIMIT ?`)
     .all(...params,limit).reverse().map((m:any)=>({
       ...m,
       reactions:JSON.parse(m.reactions||'[]'),
@@ -1056,6 +1056,76 @@ function accessibleMessage(messageId:string,userId:string) {
   const allowed=message.channel_id?canReadChannel(message.channel_id,userId):message.dm_id?canAccessDm(message.dm_id,userId):false;
   return allowed?message:null;
 }
+
+app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, asyncRoute(async (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  const source=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any;
+  if(!source)return fail(res,404,'Message not found.');
+  const p=z.object({
+    channelId:z.string().min(1).max(128).optional(),
+    dmId:z.string().min(1).max(128).optional()
+  }).refine(value=>Boolean(value.channelId)!==Boolean(value.dmId),{message:'Choose exactly one destination.'}).safeParse(req.body);
+  if(!p.success)return fail(res,400,p.error.issues[0]?.message||'Choose a destination.');
+
+  let destinationChannel:any=null;
+  if(p.data.channelId){
+    destinationChannel=db.prepare('SELECT id,server_id,type,slow_mode,name FROM channels WHERE id=?').get(p.data.channelId) as any;
+    if(!destinationChannel||destinationChannel.type==='voice')return fail(res,404,'Text channel not found.');
+    if(!canReadChannel(destinationChannel.id,req.user!.id))return fail(res,403,'You cannot access that channel.');
+    if(!hasPermission(destinationChannel.server_id,req.user!.id,'send_messages'))return fail(res,403,'You do not have permission to send messages in that channel.');
+    if(isTimedOut(destinationChannel.server_id,req.user!.id))return fail(res,403,'Your server timeout is active.');
+  }else if(!canAccessDm(p.data.dmId!,req.user!.id)){
+    return fail(res,403,'You cannot access that conversation.');
+  }
+
+  const sourceFiles=db.prepare('SELECT filename,mime,size,storage_name FROM attachments WHERE message_id=? ORDER BY id').all(source.id) as any[];
+  const copiedFiles:Array<{id:string;filename:string;mime:string;size:number;storage_name:string}>=[];
+  try{
+    for(const file of sourceFiles){
+      const bytes=await readUpload(file.storage_name);
+      const storageName=await storeUpload(bytes,file.mime);
+      copiedFiles.push({id:id(),filename:file.filename,mime:file.mime,size:file.size,storage_name:storageName});
+    }
+
+    const messageId=id();
+    const created=db.transaction(()=>{
+      if(destinationChannel){
+        db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`slow-mode:${destinationChannel.id}:${req.user!.id}`);
+        const channelState=db.prepare('SELECT slow_mode FROM channels WHERE id=?').get(destinationChannel.id) as any;
+        const latest=db.prepare('SELECT created_at FROM messages WHERE channel_id=? AND sender_id=? ORDER BY created_at DESC LIMIT 1').get(destinationChannel.id,req.user!.id) as any;
+        if(channelState?.slow_mode>0&&latest){
+          const remaining=channelState.slow_mode-(Date.now()-new Date(latest.created_at).getTime())/1000;
+          if(remaining>0)return {error:'slow_mode',retryAfter:Math.ceil(remaining)};
+        }
+      }
+      db.prepare(`INSERT INTO messages(id,channel_id,dm_id,sender_id,content,forwarded_from_message_id,forwarded_from_user_id)
+        VALUES(?,?,?,?,?,?,?)`).run(messageId,p.data.channelId||null,p.data.dmId||null,req.user!.id,source.content,source.id,source.sender_id);
+      for(const file of copiedFiles){
+        db.prepare('INSERT INTO attachments(id,message_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)')
+          .run(file.id,messageId,file.filename,file.mime,file.size,file.storage_name);
+      }
+      if(p.data.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),p.data.dmId);
+      return {ok:true};
+    })();
+
+    if('error' in created&&created.error==='slow_mode'){
+      await deleteStoredObjects(copiedFiles.map(file=>file.storage_name));
+      res.setHeader('Retry-After',String(created.retryAfter));
+      return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);
+    }
+    const message=messageRows('m.id=?',[messageId],1)[0];
+    const room=destinationChannel?`channel:${destinationChannel.id}`:`dm:${p.data.dmId}`;
+    io.to(room).emit('message:new',message);
+    if(p.data.dmId){
+      const recipients=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(p.data.dmId,req.user!.id) as any[];
+      recipients.forEach(member=>notify(member.user_id,'dm',`Forwarded message from ${req.user!.username}`,String(source.content||'Attachment').slice(0,100),`/channels/@me/${p.data.dmId}`));
+    }
+    return res.status(201).json({message});
+  }catch(error){
+    try{await deleteStoredObjects(copiedFiles.map(file=>file.storage_name));}catch{/* Preserve the original forwarding error. */}
+    throw error;
+  }
+}));
 
 app.get('/api/bookmarks', requireAuth, (req:AuthedRequest,res) => {
   const saved=db.prepare(`SELECT b.message_id,b.created_at AS saved_at,m.channel_id,m.dm_id,

@@ -21,6 +21,7 @@ import { shouldNotifyChannelMention } from './mention-policy.js';
 import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
+import { verifyStripeWebhookSignature } from './boost.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -70,6 +71,78 @@ app.use(cors({
   origin: (requestOrigin, callback) => callback(null, isAllowedOrigin(requestOrigin)),
   credentials: true
 }));
+
+/* Stripe must receive the exact raw body to verify its signature. */
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }), asyncRoute(async (req: Request,res: Response) => {
+  const secret=process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  if(!secret)return res.status(503).json({error:'Stripe Boost webhooks are not configured.'});
+  const payload=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);
+  if(!verifyStripeWebhookSignature(payload,req.header('stripe-signature')||'',secret))return fail(res,400,'Invalid Stripe webhook signature.');
+  let event:any;
+  try{event=JSON.parse(payload.toString('utf8'));}catch{return fail(res,400,'Invalid webhook payload.');}
+  if(typeof event?.id!=='string'||typeof event?.type!=='string')return fail(res,400,'Invalid Stripe event.');
+
+  if(event.type==='checkout.session.completed'&&event.data?.object?.mode==='subscription'){
+    const session=event.data.object;
+    const userId=String(session.metadata?.userId||session.client_reference_id||'');
+    const subscriptionId=typeof session.subscription==='string'?session.subscription:session.subscription?.id;
+    const customerId=typeof session.customer==='string'?session.customer:session.customer?.id;
+    const stripeKey=process.env.STRIPE_SECRET_KEY?.trim();
+    if(userId&&subscriptionId&&stripeKey){
+      // Do not grant based only on a completed Checkout page. Read the
+      // subscription's authoritative status from Stripe first.
+      const response=await fetch('https://api.stripe.com/v1/subscriptions/'+encodeURIComponent(subscriptionId),{headers:{Authorization:'Bearer '+stripeKey}});
+      if(!response.ok)throw new Error('Stripe subscription lookup failed; webhook will retry.');
+      const subscription:any=await response.json();
+      const rawStatus=String(subscription.status||'');
+      const status=rawStatus==='active'?'active':rawStatus==='trialing'?'trialing':rawStatus==='past_due'?'past_due':'inactive';
+      const periodEnd=Number(subscription.current_period_end)>0?new Date(Number(subscription.current_period_end)*1000).toISOString():null;
+      const transaction=db.transaction(()=>{
+        const previous=db.prepare('SELECT created FROM stripe_webhook_events WHERE id=?').get(event.id);
+        if(previous)return;
+        db.prepare(`INSERT INTO user_boosts(user_id,stripe_customer_id,stripe_subscription_id,status,current_period_end,last_event_created,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,NOW(),NOW())
+          ON CONFLICT(user_id) DO UPDATE SET stripe_customer_id=COALESCE(EXCLUDED.stripe_customer_id,user_boosts.stripe_customer_id),
+          stripe_subscription_id=EXCLUDED.stripe_subscription_id,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,
+          last_event_created=EXCLUDED.last_event_created,updated_at=NOW()
+          WHERE EXCLUDED.last_event_created>=user_boosts.last_event_created`)
+          .run(userId,customerId||null,subscriptionId,status,periodEnd,Number(event.created)||0);
+        db.prepare('INSERT INTO stripe_webhook_events(id) VALUES(?) ON CONFLICT(id) DO NOTHING').run(event.id);
+      });
+      transaction();
+    }
+  }else if(['customer.subscription.created','customer.subscription.updated','customer.subscription.deleted'].includes(event.type)){
+    const subscription=event.data?.object||{};
+    const subscriptionId=String(subscription.id||'');
+    const existing=subscriptionId?db.prepare('SELECT user_id FROM user_boosts WHERE stripe_subscription_id=?').get(subscriptionId) as any:null;
+    const userId=String(subscription.metadata?.userId||existing?.user_id||'');
+    if(userId&&subscriptionId){
+      const rawStatus=String(subscription.status||'');
+      const status=rawStatus==='active'?'active':rawStatus==='trialing'?'trialing':rawStatus==='past_due'?'past_due':'canceled';
+      const periodEnd=Number(subscription.current_period_end)>0?new Date(Number(subscription.current_period_end)*1000).toISOString():null;
+      const customerId=typeof subscription.customer==='string'?subscription.customer:subscription.customer?.id;
+      const transaction=db.transaction(()=>{
+        const previous=db.prepare('SELECT created FROM stripe_webhook_events WHERE id=?').get(event.id);
+        if(previous)return;
+        db.prepare(`INSERT INTO user_boosts(user_id,stripe_customer_id,stripe_subscription_id,status,current_period_end,last_event_created,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,NOW(),NOW())
+          ON CONFLICT(user_id) DO UPDATE SET stripe_customer_id=COALESCE(EXCLUDED.stripe_customer_id,user_boosts.stripe_customer_id),
+          stripe_subscription_id=EXCLUDED.stripe_subscription_id,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,
+          last_event_created=EXCLUDED.last_event_created,updated_at=NOW()
+          WHERE EXCLUDED.last_event_created>=user_boosts.last_event_created`)
+          .run(userId,customerId||null,subscriptionId,status,periodEnd,Number(event.created)||0);
+        db.prepare('INSERT INTO stripe_webhook_events(id) VALUES(?) ON CONFLICT(id) DO NOTHING').run(event.id);
+      });
+      transaction();
+    }else{
+      db.prepare('INSERT INTO stripe_webhook_events(id) VALUES(?) ON CONFLICT(id) DO NOTHING').run(event.id);
+    }
+  }else{
+    db.prepare('INSERT INTO stripe_webhook_events(id) VALUES(?) ON CONFLICT(id) DO NOTHING').run(event.id);
+  }
+  return res.json({received:true});
+}));
+
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
@@ -290,6 +363,41 @@ function emitFriendUpdate(...userIds: string[]) {
   for (const userId of new Set(userIds.filter(Boolean))) io.to(`user:${userId}`).emit('friends:updated');
 }
 
+
+const DEFAULT_USER_SETTINGS = {
+  theme:'graphite',density:'comfortable',messageLayout:'cozy',fontScale:100,reducedMotion:false,contrast:'normal',
+  quietMode:false,dmNotifications:true,mentionNotifications:true,browserNotifications:false,
+  keybinds:{focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'},
+  voiceInputDeviceId:'',voiceOutputDeviceId:'',sidebarWidth:292,messageRadius:12,fontFamily:'system',
+  customTheme:{bg:'#19211d',panel:'#202b25',panel2:'#29372f',panel3:'#34443a',line:'#405247',lineStrong:'#5e7668',muted:'#a8b8ac',text:'#edf4ee',accent:'#82a594',accentHover:'#9bbbac',accentSoft:'#31493e',buttonText:'#14221b'}
+};
+const customThemeColorsSchema=z.object({
+  bg:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),panel:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  panel2:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),panel3:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  line:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),lineStrong:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  muted:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),text:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  accent:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),accentHover:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  accentSoft:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),buttonText:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional()
+}).strict();
+const userSettingsPatchSchema=z.object({
+  theme:z.enum(['graphite','slate','warm','light','custom']).optional(),
+  density:z.enum(['comfortable','compact']).optional(),messageLayout:z.enum(['cozy','compact']).optional(),
+  fontScale:z.number().int().min(85).max(125).optional(),reducedMotion:z.boolean().optional(),contrast:z.enum(['normal','high']).optional(),
+  quietMode:z.boolean().optional(),dmNotifications:z.boolean().optional(),mentionNotifications:z.boolean().optional(),browserNotifications:z.boolean().optional(),
+  keybinds:z.object({focusSearch:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional(),toggleMembers:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional()}).partial().optional(),
+  voiceInputDeviceId:z.string().max(256).optional(),voiceOutputDeviceId:z.string().max(256).optional(),
+  customTheme:customThemeColorsSchema.optional(),sidebarWidth:z.number().int().min(250).max(380).optional(),
+  messageRadius:z.number().int().min(6).max(24).optional(),fontFamily:z.enum(['system','serif','mono']).optional()
+}).strict();
+function getBoostSnapshot(userId:string){
+  const row=db.prepare('SELECT status,current_period_end FROM user_boosts WHERE user_id=?').get(userId) as any;
+  const end=row?.current_period_end?new Date(row.current_period_end).getTime():null;
+  const active=!!row&&['active','trialing'].includes(row.status)&&(end===null||(Number.isFinite(end)&&end>Date.now()));
+  return {active,status:active?row.status:(row?.status||'inactive'),currentPeriodEnd:row?.current_period_end||null,
+    checkoutConfigured:!!(process.env.STRIPE_SECRET_KEY?.trim()&&process.env.RELAY_BOOST_PRICE_ID?.trim()&&process.env.STRIPE_WEBHOOK_SECRET?.trim()),
+    billingConfigured:!!(process.env.STRIPE_SECRET_KEY?.trim()&&process.env.STRIPE_WEBHOOK_SECRET?.trim())};
+}
+
 const authLimiter = databaseRateLimit('auth',20,15*60*1000);
 const interactionLimiter = databaseRateLimit('interaction',45,60*1000);
 app.get('/api/health', (_req, res) => {
@@ -473,16 +581,58 @@ app.patch('/api/presence', requireAuth, (req: AuthedRequest,res) => {
 });
 app.get('/api/settings', requireAuth, (req: AuthedRequest,res) => {
   const row=db.prepare('SELECT data FROM settings WHERE user_id=?').get(req.user!.id) as any;
-  res.json({settings:JSON.parse(row?.data||'{}')});
+  const boost=getBoostSnapshot(req.user!.id);
+  const stored=JSON.parse(row?.data||'{}');
+  const settings={...DEFAULT_USER_SETTINGS,...stored,
+    keybinds:{...DEFAULT_USER_SETTINGS.keybinds,...(stored.keybinds||{})},
+    customTheme:{...DEFAULT_USER_SETTINGS.customTheme,...(stored.customTheme||{})}};
+  if(settings.theme==='custom'&&!boost.active)settings.theme='graphite';
+  res.json({settings,boost});
 });
 app.put('/api/settings', requireAuth, (req: AuthedRequest,res) => {
+  const incoming=userSettingsPatchSchema.safeParse(req.body?.settings);
+  if(!incoming.success)return fail(res,400,'One or more settings are invalid. Check the selected values and try again.');
+  const boost=getBoostSnapshot(req.user!.id);
+  const advancedKeys=['customTheme','sidebarWidth','messageRadius','fontFamily'];
+  if(!boost.active&&(incoming.data.theme==='custom'||advancedKeys.some(key=>Object.prototype.hasOwnProperty.call(incoming.data,key))))
+    return fail(res,403,'Relay Boost is required for custom themes and advanced appearance controls.');
   const current=db.prepare('SELECT data FROM settings WHERE user_id=?').get(req.user!.id) as any;
-  const incoming=z.record(z.any()).safeParse(req.body.settings);
-  if (!incoming.success) return fail(res,400,'Settings must be an object.');
-  const data={...JSON.parse(current?.data||'{}'),...incoming.data};
+  const previous=JSON.parse(current?.data||'{}');
+  const data={...DEFAULT_USER_SETTINGS,...previous,...incoming.data,
+    keybinds:{...DEFAULT_USER_SETTINGS.keybinds,...(previous.keybinds||{}),...(incoming.data.keybinds||{})},
+    customTheme:{...DEFAULT_USER_SETTINGS.customTheme,...(previous.customTheme||{}),...(incoming.data.customTheme||{})}};
   db.prepare(`INSERT INTO settings(user_id,data,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`).run(req.user!.id,JSON.stringify(data),now());
-  res.json({settings:data});
+  res.json({settings:data,boost});
 });
+app.post('/api/boost/checkout', requireAuth, interactionLimiter, asyncRoute(async (req:AuthedRequest,res) => {
+  const boost=getBoostSnapshot(req.user!.id);
+  if(boost.active)return fail(res,409,'Relay Boost is already active on this account.');
+  const secret=process.env.STRIPE_SECRET_KEY?.trim(),price=process.env.RELAY_BOOST_PRICE_ID?.trim(),webhookSecret=process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  if(!secret||!price||!webhookSecret)return fail(res,503,'Relay Boost checkout is not configured yet. The administrator must add Stripe credentials and the Boost price ID.');
+  const base=(process.env.RELAY_PUBLIC_URL||process.env.CLIENT_ORIGIN||'').trim().replace(/\/$/,'');
+  if(!/^https:\/\//i.test(base))return fail(res,503,'The public HTTPS site URL is not configured for Boost checkout.');
+  const account=db.prepare('SELECT email FROM users WHERE id=?').get(req.user!.id) as any;
+  const form=new URLSearchParams();form.set('mode','subscription');form.set('line_items[0][price]',price);form.set('line_items[0][quantity]','1');
+  form.set('client_reference_id',req.user!.id);form.set('metadata[userId]',req.user!.id);form.set('subscription_data[metadata][userId]',req.user!.id);
+  form.set('success_url',base+'/settings/boost?checkout=success');form.set('cancel_url',base+'/settings/boost?checkout=cancelled');form.set('allow_promotion_codes','true');
+  if(account?.email)form.set('customer_email',account.email);
+  const response=await fetch('https://api.stripe.com/v1/checkout/sessions',{method:'POST',headers:{Authorization:'Bearer '+secret,'Content-Type':'application/x-www-form-urlencoded'},body:form.toString()});
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok||typeof payload.url!=='string'){console.error('Relay Boost checkout request failed:',response.status);return fail(res,502,'Stripe could not start the Boost checkout.');}
+  res.json({url:payload.url});
+}));
+app.post('/api/boost/portal', requireAuth, interactionLimiter, asyncRoute(async (req:AuthedRequest,res) => {
+  const secret=process.env.STRIPE_SECRET_KEY?.trim();if(!secret)return fail(res,503,'Relay Boost billing is not configured.');
+  const row=db.prepare('SELECT stripe_customer_id FROM user_boosts WHERE user_id=?').get(req.user!.id) as any;
+  if(!row?.stripe_customer_id)return fail(res,404,'No Boost billing account is linked to this user.');
+  const base=(process.env.RELAY_PUBLIC_URL||process.env.CLIENT_ORIGIN||'').trim().replace(/\/$/,'');
+  if(!/^https:\/\//i.test(base))return fail(res,503,'The public HTTPS site URL is not configured for billing.');
+  const form=new URLSearchParams({customer:row.stripe_customer_id,return_url:base+'/settings/boost'});
+  const response=await fetch('https://api.stripe.com/v1/billing_portal/sessions',{method:'POST',headers:{Authorization:'Bearer '+secret,'Content-Type':'application/x-www-form-urlencoded'},body:form.toString()});
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok||typeof payload.url!=='string'){console.error('Relay Boost billing portal request failed:',response.status);return fail(res,502,'Stripe could not open the billing portal.');}
+  res.json({url:payload.url});
+}));
 app.get('/api/privacy', requireAuth, (req: AuthedRequest,res) => { const row=db.prepare('SELECT dm_privacy,activity_visible FROM users WHERE id=?').get(req.user!.id) as any; res.json({dm_privacy:row.dm_privacy,activity_visible:!!row.activity_visible}); });
 app.patch('/api/privacy', requireAuth, asyncRoute(async (req,res) => {
   const parsed=z.object({dm_privacy:z.enum(['everyone','friends','nobody']).optional(),activity_visible:z.boolean().optional()}).safeParse(req.body);

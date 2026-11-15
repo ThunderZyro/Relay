@@ -46,3 +46,14 @@ export function mergeUserSettings(...sources: Record<string,any>[]) {
 export function requiresBoostSettings(patch: Record<string,any>) {
   return patch.theme==='custom' || ['customTheme','sidebarWidth','messageRadius','fontFamily'].some(key=>Object.prototype.hasOwnProperty.call(patch,key));
 }
+
+export function normalizeSettingsForEntitlement(settings:Record<string,any>,boostActive:boolean){
+ if(boostActive)return settings;
+ return {
+  ...settings,
+  theme:settings.theme==='custom'?'graphite':settings.theme,
+  sidebarWidth:DEFAULT_USER_SETTINGS.sidebarWidth,
+  messageRadius:DEFAULT_USER_SETTINGS.messageRadius,
+  fontFamily:DEFAULT_USER_SETTINGS.fontFamily
+ };
+}

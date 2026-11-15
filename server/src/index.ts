@@ -248,15 +248,31 @@ const interactionLimiter = rateLimit({ windowMs: 60 * 1000, limit: 45, standardH
 app.get('/api/health', (_req, res) => {
   const productionStorageMissing = isProd ? missingStorageEnvironment : [];
   const passwordRecoveryConfigured = !!(process.env.RESEND_API_KEY?.trim() && process.env.RELAY_EMAIL_FROM?.trim());
-  res.json({
-    status: isProd && !persistentStorageEnabled ? 'degraded' : 'ok',
-    service: 'relay-api',
-    time: now(),
-    persistentStorage: persistentStorageEnabled,
-    storageMode: persistentStorageEnabled ? 's3' : isProd ? 'unavailable' : 'local-disk',
-    missingStorageEnvironment: productionStorageMissing,
-    passwordRecoveryConfigured
-  });
+  let databaseAvailable = true;
+
+  // Readiness must verify the database, not just the presence of an environment variable.
+  try {
+    db.prepare('SELECT 1 AS ready').get();
+  } catch (error) {
+    databaseAvailable = false;
+    console.error('Relay database health check failed:', error instanceof Error ? error.message : 'Unknown database error');
+  }
+
+  const storageDegraded = isProd && !persistentStorageEnabled;
+  const status = !databaseAvailable ? 'unhealthy' : storageDegraded ? 'degraded' : 'ok';
+  res
+    .status(databaseAvailable ? 200 : 503)
+    .set('Cache-Control', 'no-store')
+    .json({
+      status,
+      service: 'relay-api',
+      time: now(),
+      database: databaseAvailable ? 'connected' : 'unavailable',
+      persistentStorage: persistentStorageEnabled,
+      storageMode: persistentStorageEnabled ? 's3' : isProd ? 'unavailable' : 'local-disk',
+      missingStorageEnvironment: productionStorageMissing,
+      passwordRecoveryConfigured
+    });
 });
 app.get('/api/voice/ice-servers', requireAuth, (_req,res) => {
   let configured:any[]=[];
@@ -771,20 +787,36 @@ function messageRows(whereSql:string, params:any[], limit=60) {
   return db.prepare(`SELECT m.*,u.username,u.avatar,
     (SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions,
     (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments
-    FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC LIMIT ?`)
+    FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC,m.id DESC LIMIT ?`)
     .all(...params,limit).reverse().map((m:any)=>({
       ...m,
       reactions:JSON.parse(m.reactions||'[]'),
       attachments:JSON.parse(m.attachments||'[]')
     }));
 }
+function messageHistoryCursor(req: Request) {
+  const before = String(req.query.before || '').slice(0, 80);
+  const beforeId = String(req.query.beforeId || '').slice(0, 128);
+  if (!before) return null;
+  // The ID tie-breaker prevents messages with the same creation time from being skipped.
+  return beforeId
+    ? { sql: '(m.created_at<? OR (m.created_at=? AND m.id<?))', params: [before, before, beforeId] }
+    : { sql: 'm.created_at<?', params: [before] };
+}
+
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
   if(!canReadChannel(req.params.channelId,req.user!.id))return fail(res,403,'Channel membership required.');
-  const before=String(req.query.before||''); const rows=before?messageRows('m.channel_id=? AND m.deleted_at IS NULL AND m.created_at<?',[req.params.channelId,before]):messageRows('m.channel_id=? AND m.deleted_at IS NULL',[req.params.channelId]); res.json({messages:rows});
+  const cursor = messageHistoryCursor(req);
+  const where = cursor ? `m.channel_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.channel_id=? AND m.deleted_at IS NULL';
+  const params = cursor ? [req.params.channelId, ...cursor.params] : [req.params.channelId];
+  res.json({messages:messageRows(where,params)});
 });
 app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
-  const before=String(req.query.before||''); const rows=before?messageRows('m.dm_id=? AND m.deleted_at IS NULL AND m.created_at<?',[req.params.dmId,before]):messageRows('m.dm_id=? AND m.deleted_at IS NULL',[req.params.dmId]); res.json({messages:rows});
+  const cursor = messageHistoryCursor(req);
+  const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
+  const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
+  res.json({messages:messageRows(where,params)});
 });
 const messageCreateSchema=z.object({content:z.string().max(4000).default(''),reply_to:z.string().optional(),uploadIds:z.array(z.string()).max(8).optional()}).refine(v=>v.content.trim().length>0 || !!v.uploadIds?.length,{message:'Write a message or attach a file.'});
 function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:string;dmId?:string}) {
@@ -849,7 +881,9 @@ app.post('/api/messages/:messageId/report', requireAuth, interactionLimiter, (re
   const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(!m.channel_id)return fail(res,400,'Only server-channel messages can be submitted to a server moderation queue.'); if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.' );
   const p=z.object({reason:z.string().trim().min(5).max(500)}).safeParse(req.body); if(!p.success)return fail(res,400,'Explain the concern in at least 5 characters.');
-  try{db.prepare('INSERT INTO message_reports(id,message_id,reporter_id,reason) VALUES(?,?,?,?)').run(id(),m.id,req.user!.id,p.data.reason);}catch{return fail(res,409,'You have already reported this message.');} res.status(201).json({ok:true});
+  const report = db.prepare('INSERT INTO message_reports(id,message_id,reporter_id,reason) VALUES(?,?,?,?) ON CONFLICT(message_id,reporter_id) DO NOTHING').run(id(),m.id,req.user!.id,p.data.reason);
+  if (!report.changes) return fail(res,409,'You have already reported this message.');
+  res.status(201).json({ok:true});
 });
 app.get('/api/servers/:serverId/reports', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_messages'))return fail(res,403,'You do not have permission to view reports.');

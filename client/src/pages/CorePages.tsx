@@ -9,70 +9,45 @@ export function HomePage(){
  const {user}=useAuth();
  const [friends,setFriends]=useState<any[]>([]);
  const [dms,setDms]=useState<any[]>([]);
+ const [servers,setServers]=useState<any[]>([]);
+ const [profile,setProfile]=useState<any>(null);
  const [loading,setLoading]=useState(true);
- useEffect(()=>{
-  let active=true;
-  Promise.all([api('/friends'),api('/dms')])
-   .then(([f,d]:any[])=>{if(!active)return;setFriends(f.friends||[]);setDms(d.conversations||[]);})
-   .catch(()=>{})
-   .finally(()=>{if(active)setLoading(false);});
-  return()=>{active=false;};
- },[]);
+ const [loadError,setLoadError]=useState('');
+ const load=async()=>{
+  if(!user?.id)return;
+  setLoading(true);setLoadError('');
+  try{
+   const [f,d,s,p]=await Promise.all([api('/friends'),api('/dms'),api('/servers'),api(`/profile/${user.id}`)]);
+   setFriends((f as any).friends||[]);setDms((d as any).conversations||[]);setServers((s as any).servers||[]);setProfile((p as any).user||null);
+  }catch(error:any){setLoadError(error.message||'Relay could not load your home right now.');}
+  finally{setLoading(false);}
+ };
+ useEffect(()=>{void load();},[user?.id]);
  const accepted=friends.filter(f=>f.status==='accepted');
  const pending=friends.filter(f=>f.status==='pending');
- const firstName=user?.username||'friend';
+ const profileReady=!!(profile?.avatar||profile?.bio||profile?.status_text);
+ const hasMessage=dms.some(dm=>!!dm.last_message);
+ const setup=[
+  {label:'Set up your profile',description:'Add an avatar, bio, or status so people recognise you.',done:profileReady,to:`/profile/${user?.id}`,action:'Edit profile'},
+  {label:'Meet someone on Relay',description:'Add a friend to start a conversation.',done:accepted.length>0,to:'/friends',action:'Find friends'},
+  {label:'Join a community',description:'Find a club or create your own.',done:servers.length>0,to:'/discover',action:'Explore clubs'},
+  {label:'Send your first message',description:'Say hello in a direct message or community channel.',done:hasMessage,to:'/friends',action:'Start chatting'}
+ ];
+ const completed=setup.filter(item=>item.done).length;
  return <div className="page-content clubhouse-home">
-  <section className="home-hero">
-   <div className="home-hero-copy">
-    <div className="home-kicker"><span>✦</span> YOUR LITTLE CORNER OF RELAY</div>
-    <h1>Welcome, {firstName}!</h1>
-    <p>Your messages, friends, and communities are all in one place.</p>
-    <div className="home-hero-actions">
-     <Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open messages</Link>
-     <Link className="home-quiet-link" to="/friends"><Users size={18}/> Meet my people <ArrowRight size={16}/></Link>
-    </div>
-    <div className="home-mini-counts">
-     <span><b>{accepted.length}</b> {accepted.length===1?'friend':'friends'}</span>
-     <i/>
-     <span><b>{dms.length}</b> {dms.length===1?'chat':'chats'}</span>
-    </div>
+  <section className="home-hero"><div className="home-hero-copy"><div className="home-kicker"><span>✦</span> YOUR LITTLE CORNER OF RELAY</div><h1>Welcome, {user?.username||'friend'}!</h1><p>Your messages, friends, and communities are all in one place.</p><div className="home-hero-actions"><Link className="btn primary" to="/channels/@me"><MessageCircle size={18}/> Open messages</Link><Link className="home-quiet-link" to="/friends"><Users size={18}/> Meet my people <ArrowRight size={16}/></Link></div><div className="home-mini-counts"><span><b>{accepted.length}</b> {accepted.length===1?'friend':'friends'}</span><i/><span><b>{dms.length}</b> {dms.length===1?'chat':'chats'}</span><i/><span><b>{servers.length}</b> {servers.length===1?'club':'clubs'}</span></div></div><div className="home-hero-art"><img className="relay-mascot-art" src="/relay-mascots.svg" alt="Three friendly Relay chat mascots"/><span className="hero-art-caption"><i/> Good conversations start here</span></div></section>
+  {loadError&&<div className="home-load-error" role="alert"><div><b>Some of your home data didn't load.</b><small>{loadError}</small></div><Button variant="secondary" onClick={()=>void load()}>Try again</Button></div>}
+  {!loading&&completed<setup.length&&<section className="onboarding-card"><div className="onboarding-heading"><div><span className="home-board-kicker">YOUR FIRST STEPS</span><h2>Make Relay yours</h2><p>A few quick steps to get your space started.</p></div><strong>{completed}/{setup.length}</strong></div><div className="onboarding-progress"><span style={{width:`${completed/setup.length*100}%`}}/></div><div className="onboarding-list">{setup.map((item,index)=><div className={`onboarding-item ${item.done?'done':''}`} key={item.label}><span className="onboarding-check">{item.done?<Check size={15}/>:index+1}</span><div><b>{item.label}</b><small>{item.description}</small></div><Link to={item.to}>{item.done?'Done':item.action}<ArrowRight size={14}/></Link></div>)}</div></section>}
+  {loading?<div className="home-loading"><Loading label="Getting your Relay ready…"/></div>:<>
+   <div className="home-shortcut-row" aria-label="Quick places"><Link to="/discover" className="home-shortcut shortcut-clubs"><span className="shortcut-art"><Compass size={25}/><i>✳</i></span><span><b>Find a club</b><small>Explore new interests</small></span><ArrowRight size={18}/></Link><Link to="/friends" className="home-shortcut shortcut-people"><span className="shortcut-art"><Users size={25}/><i>♥</i></span><span><b>Find your people</b><small>Add a friend</small></span><ArrowRight size={18}/></Link><Link to="/channels/@me" className="home-shortcut shortcut-messages"><span className="shortcut-art"><MessageCircle size={25}/><i>✦</i></span><span><b>Read your chats</b><small>Pick up where you left off</small></span><ArrowRight size={18}/></Link></div>
+   <div className="home-lower-grid">
+    <section className="home-board home-friend-board"><header className="home-board-heading"><div><span className="home-board-kicker">THE PEOPLE CORNER</span><h2>Your friends</h2></div><Link to="/friends">See everyone <ArrowRight size={15}/></Link></header>{accepted.length?<div className="home-friend-list">{accepted.slice(0,5).map((f:any,index:number)=><div className={'home-friend-card home-friend-card-'+(index%4)} key={f.id}><Avatar name={f.user.username} src={f.user.avatar} size="lg" presence={f.user.presence}/><div><b>{f.user.username}</b><small>{f.user.status_text||f.user.presence||'On Relay'}</small></div><Link to={'/profile/'+f.user.id} aria-label={'Open '+f.user.username+"'s profile"}><ArrowRight size={17}/></Link></div>)}</div>:<div className="home-friendly-empty"><span className="empty-doodle">☺</span><div><b>Your people are waiting to meet you.</b><p>Add someone you know to start chatting.</p><Link to="/friends">Find a friend <ArrowRight size={15}/></Link></div></div>}</section>
+    <section className="home-board home-chat-board"><header className="home-board-heading"><div><span className="home-board-kicker">PICK UP WHERE YOU LEFT OFF</span><h2>Recent chats</h2></div><Link to="/channels/@me">All chats <ArrowRight size={15}/></Link></header>{dms.length?<div className="home-recent-list">{dms.slice(0,5).map((dm:any,index:number)=>{const others=dm.members.filter((m:any)=>m.id!==user?.id);const name=dm.name||others.map((m:any)=>m.username).join(', ')||'Group chat';return <Link to={'/channels/@me/'+dm.id} className={'home-recent-chat recent-chat-'+(index%4)} key={dm.id}><span className="recent-chat-avatar">{others.length>1?<Users size={19}/>:<Avatar name={others[0]?.username||'Friend'} src={others[0]?.avatar} size="md"/>}</span><span className="recent-chat-copy"><b>{name}</b><small>{dm.last_message||'Say hello and start the conversation'}</small></span><ArrowRight size={17}/></Link>;})}</div>:<div className="home-friendly-empty"><span className="empty-doodle">✉</span><div><b>No chats just yet.</b><p>Choose a friend and send your first hello.</p><Link to="/friends">Find someone to chat with <ArrowRight size={15}/></Link></div></div>}</section>
    </div>
-   <div className="home-hero-art">
-     <img className="relay-mascot-art" src="/relay-mascots.svg" alt="Three friendly Relay chat mascots"/>
-     <span className="hero-art-caption"><i/> Good conversations start here</span>
-    </div>
-  </section>
-  <div className="home-shortcut-row" aria-label="Quick places">
-   <Link to="/discover" className="home-shortcut shortcut-clubs"><span className="shortcut-art"><Compass size={25}/><i>✳</i></span><span><b>Find a club</b><small>Explore new interests</small></span><ArrowRight size={18}/></Link>
-   <Link to="/friends" className="home-shortcut shortcut-people"><span className="shortcut-art"><Users size={25}/><i>♥</i></span><span><b>Find your people</b><small>Add a friend</small></span><ArrowRight size={18}/></Link>
-   <Link to="/channels/@me" className="home-shortcut shortcut-messages"><span className="shortcut-art"><MessageCircle size={25}/><i>✦</i></span><span><b>Read your chats</b><small>Pick up where you left off</small></span><ArrowRight size={18}/></Link>
-  </div>
-  <div className="home-lower-grid">
-   <section className="home-board home-friend-board">
-    <header className="home-board-heading"><div><span className="home-board-kicker">THE PEOPLE CORNER</span><h2>Your friends</h2></div><Link to="/friends">See everyone <ArrowRight size={15}/></Link></header>
-    {loading?<Loading label="Finding your friends…"/>:accepted.length?
-     <div className="home-friend-list">{accepted.slice(0,5).map((f:any,index:number)=><div className={'home-friend-card home-friend-card-'+(index%4)} key={f.id}>
-      <Avatar name={f.user.username} src={f.user.avatar} size="lg" presence={f.user.presence}/>
-      <div><b>{f.user.username}</b><small>{f.user.status_text||f.user.presence||'On Relay'}</small></div>
-      <Link to={'/profile/'+f.user.id} aria-label={'Open '+f.user.username+"'s profile"}><ArrowRight size={17}/></Link>
-     </div>)}</div>
-     :<div className="home-friendly-empty"><span className="empty-doodle">☺</span><div><b>Your people are waiting to meet you.</b><p>Add someone you know to start chatting.</p><Link to="/friends">Find a friend <ArrowRight size={15}/></Link></div></div>}
-   </section>
-   <section className="home-board home-chat-board">
-    <header className="home-board-heading"><div><span className="home-board-kicker">PICK UP WHERE YOU LEFT OFF</span><h2>Recent chats</h2></div><Link to="/channels/@me">All chats <ArrowRight size={15}/></Link></header>
-    {loading?<Loading label="Loading your chats…"/>:dms.length?
-     <div className="home-recent-list">{dms.slice(0,5).map((dm:any,index:number)=>{const others=dm.members.filter((m:any)=>m.id!==user?.id);const name=dm.name||others.map((m:any)=>m.username).join(', ')||'Group chat';return <Link to={'/channels/@me/'+dm.id} className={'home-recent-chat recent-chat-'+(index%4)} key={dm.id}>
-      <span className="recent-chat-avatar">{others.length>1?<Users size={19}/>:<Avatar name={others[0]?.username||'Friend'} src={others[0]?.avatar} size="md"/>}</span>
-      <span className="recent-chat-copy"><b>{name}</b><small>{dm.last_message||'Say hello and start the conversation'}</small></span>
-      <ArrowRight size={17}/>
-     </Link>;})}</div>
-     :<div className="home-friendly-empty"><span className="empty-doodle">✉</span><div><b>No chats just yet.</b><p>Choose a friend and send your first hello.</p><Link to="/friends">Find someone to chat with <ArrowRight size={15}/></Link></div></div>}
-   </section>
-  </div>
-  {pending.length>0&&<div className="home-pending-note"><span>✉</span><div><b>You have {pending.length} friend request{pending.length===1?'':'s'}.</b><small>Someone would like to connect with you.</small></div><Link to="/friends">Take a look <ArrowRight size={15}/></Link></div>}
+   {pending.length>0&&<div className="home-pending-note"><span>✉</span><div><b>You have {pending.length} friend request{pending.length===1?'':'s'}.</b><small>Someone would like to connect with you.</small></div><Link to="/friends">Take a look <ArrowRight size={15}/></Link></div>}
+  </>}
  </div>;
 }
-
 export function FriendsPage(){
  const toast=useToast();const navigate=useNavigate();const [friends,setFriends]=useState<any[]>([]);const [tab,setTab]=useState('online');const [username,setUsername]=useState('');const [busy,setBusy]=useState(false);const [dmUsers,setDmUsers]=useState<string[]>([]);const [groupOpen,setGroupOpen]=useState(false);const [groupName,setGroupName]=useState('');const [groupUsers,setGroupUsers]=useState<string[]>([]);
  const load=async(showErrors=true)=>{try{const r=await api<{friends:any[]}>('/friends');setFriends(r.friends);}catch(e:any){if(showErrors)toast.show(e.message,'error');}};useEffect(()=>{void load();const refreshWhenActive=()=>{if(document.visibilityState==='visible')void load(false);};const refreshFromSocket=()=>void load(false);const timer=window.setInterval(()=>void load(false),15000);window.addEventListener('focus',refreshWhenActive);document.addEventListener('visibilitychange',refreshWhenActive);window.addEventListener('relay:friends-refresh',refreshFromSocket);return()=>{window.clearInterval(timer);window.removeEventListener('focus',refreshWhenActive);document.removeEventListener('visibilitychange',refreshWhenActive);window.removeEventListener('relay:friends-refresh',refreshFromSocket);};},[]);

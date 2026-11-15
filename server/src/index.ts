@@ -21,7 +21,7 @@ import { shouldNotifyChannelMention } from './mention-policy.js';
 import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
 import { storeUpload, readUpload, deleteUpload, persistentStorageEnabled, missingStorageEnvironment } from './storage.js';
-import { verifyStripeWebhookSignature } from './boost.js';
+import { verifyStripeWebhookSignature, stripeSubscriptionHasBoostPrice } from './boost.js';
 import { isSafeProfileMediaUrl } from './profile-policy.js';
 import {DEFAULT_USER_SETTINGS,userSettingsPatchSchema,mergeUserSettings,isBoostSubscriptionActive,normalizeSettingsForEntitlement,requiresBoostSettings} from './user-settings.js';
 
@@ -93,19 +93,22 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: 
     const subscriptionId=typeof session.subscription==='string'?session.subscription:session.subscription?.id;
     const customerId=typeof session.customer==='string'?session.customer:session.customer?.id;
     const stripeKey=process.env.STRIPE_SECRET_KEY?.trim();
-    if(userId&&subscriptionId&&stripeKey){
+    const boostPriceId=process.env.RELAY_BOOST_PRICE_ID?.trim();
+    if(!stripeKey||!boostPriceId)return res.status(503).json({error:'Boost billing is not fully configured. Stripe will retry this event.'});
+    if(userId&&subscriptionId){
       // Do not grant based only on a completed Checkout page. Read the
-      // subscription's authoritative status from Stripe first.
+      // subscription's authoritative status and exact Boost price from Stripe.
       const response=await fetch('https://api.stripe.com/v1/subscriptions/'+encodeURIComponent(subscriptionId),{headers:{Authorization:'Bearer '+stripeKey}});
       if(!response.ok)throw new Error('Stripe subscription lookup failed; webhook will retry.');
       const subscription:any=await response.json();
+      const matchesBoostPrice=stripeSubscriptionHasBoostPrice(subscription,boostPriceId);
       const rawStatus=String(subscription.status||'');
-      const status=rawStatus==='active'?'active':rawStatus==='trialing'?'trialing':rawStatus==='past_due'?'past_due':'inactive';
+      const status=matchesBoostPrice?(rawStatus==='active'?'active':rawStatus==='trialing'?'trialing':rawStatus==='past_due'?'past_due':'inactive'):'inactive';
       const periodEnd=Number(subscription.current_period_end)>0?new Date(Number(subscription.current_period_end)*1000).toISOString():null;
       const transaction=db.transaction(()=>{
         const previous=db.prepare('SELECT created FROM stripe_webhook_events WHERE id=?').get(event.id);
         if(previous)return;
-        db.prepare(`INSERT INTO user_boosts(user_id,stripe_customer_id,stripe_subscription_id,status,current_period_end,last_event_created,created_at,updated_at)
+        if(matchesBoostPrice)db.prepare(`INSERT INTO user_boosts(user_id,stripe_customer_id,stripe_subscription_id,status,current_period_end,last_event_created,created_at,updated_at)
           VALUES(?,?,?,?,?,?,NOW(),NOW())
           ON CONFLICT(user_id) DO UPDATE SET stripe_customer_id=COALESCE(EXCLUDED.stripe_customer_id,user_boosts.stripe_customer_id),
           stripe_subscription_id=EXCLUDED.stripe_subscription_id,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,
@@ -115,15 +118,20 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: 
         db.prepare('INSERT INTO stripe_webhook_events(id) VALUES(?) ON CONFLICT(id) DO NOTHING').run(event.id);
       });
       transaction();
+    }else{
+      db.prepare('INSERT INTO stripe_webhook_events(id) VALUES(?) ON CONFLICT(id) DO NOTHING').run(event.id);
     }
   }else if(['customer.subscription.created','customer.subscription.updated','customer.subscription.deleted'].includes(event.type)){
     const subscription=event.data?.object||{};
+    const boostPriceId=process.env.RELAY_BOOST_PRICE_ID?.trim();
+    if(!boostPriceId)return res.status(503).json({error:'Boost price is not configured. Stripe will retry this event.'});
     const subscriptionId=String(subscription.id||'');
     const existing=subscriptionId?db.prepare('SELECT user_id FROM user_boosts WHERE stripe_subscription_id=?').get(subscriptionId) as any:null;
     const userId=String(subscription.metadata?.userId||existing?.user_id||'');
     if(userId&&subscriptionId){
+      const matchesBoostPrice=stripeSubscriptionHasBoostPrice(subscription,boostPriceId);
       const rawStatus=String(subscription.status||'');
-      const status=rawStatus==='active'?'active':rawStatus==='trialing'?'trialing':rawStatus==='past_due'?'past_due':'canceled';
+      const status=matchesBoostPrice?(rawStatus==='active'?'active':rawStatus==='trialing'?'trialing':rawStatus==='past_due'?'past_due':'canceled'):'inactive';
       const periodEnd=Number(subscription.current_period_end)>0?new Date(Number(subscription.current_period_end)*1000).toISOString():null;
       const customerId=typeof subscription.customer==='string'?subscription.customer:subscription.customer?.id;
       const transaction=db.transaction(()=>{

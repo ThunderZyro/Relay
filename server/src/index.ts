@@ -17,6 +17,7 @@ import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
 import { createMessageHistoryCursor } from './message-history.js';
+import { scheduleUntil } from './session-expiry.js';
 import { shouldNotifyChannelMention } from './mention-policy.js';
 import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
@@ -1049,6 +1050,60 @@ function sharedAttachments(whereSql:string,params:any[]) {
     FROM attachments a JOIN messages m ON m.id=a.message_id JOIN users u ON u.id=m.sender_id
     WHERE ${whereSql} AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 100`).all(...params);
 }
+function accessibleMessage(messageId:string,userId:string) {
+  const message=db.prepare('SELECT id,channel_id,dm_id FROM messages WHERE id=? AND deleted_at IS NULL').get(messageId) as any;
+  if(!message)return null;
+  const allowed=message.channel_id?canReadChannel(message.channel_id,userId):message.dm_id?canAccessDm(message.dm_id,userId):false;
+  return allowed?message:null;
+}
+
+app.get('/api/bookmarks', requireAuth, (req:AuthedRequest,res) => {
+  const saved=db.prepare(`SELECT b.message_id,b.created_at AS saved_at,m.channel_id,m.dm_id,
+      c.name AS channel_name,c.server_id,s.name AS server_name,d.name AS dm_name
+    FROM message_bookmarks b
+    JOIN messages m ON m.id=b.message_id
+    LEFT JOIN channels c ON c.id=m.channel_id
+    LEFT JOIN servers s ON s.id=c.server_id
+    LEFT JOIN dms d ON d.id=m.dm_id
+    WHERE b.user_id=? AND m.deleted_at IS NULL
+    ORDER BY b.created_at DESC LIMIT 100`).all(req.user!.id) as any[];
+  const bookmarks=saved.filter(item=>item.channel_id
+    ?canReadChannel(item.channel_id,req.user!.id)
+    :item.dm_id&&canAccessDm(item.dm_id,req.user!.id))
+    .map(item=>{
+      const message=messageRows('m.id=? AND m.deleted_at IS NULL',[item.message_id],1)[0];
+      if(!message)return null;
+      return {
+        ...message,
+        saved_at:item.saved_at,
+        source_label:item.channel_id
+          ? `${item.server_name||'Server'} · #${item.channel_name||'channel'}`
+          : item.dm_name||'Direct message',
+        href:item.channel_id
+          ? `/channels/${item.server_id}/${item.channel_id}`
+          : `/channels/@me/${item.dm_id}`
+      };
+    }).filter(Boolean);
+  res.json({bookmarks});
+});
+
+app.get('/api/messages/:messageId/bookmark', requireAuth, (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  const saved=!!db.prepare('SELECT 1 FROM message_bookmarks WHERE user_id=? AND message_id=?').get(req.user!.id,req.params.messageId);
+  res.json({bookmarked:saved});
+});
+app.post('/api/messages/:messageId/bookmark', requireAuth, interactionLimiter, (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  const result=db.prepare('INSERT INTO message_bookmarks(user_id,message_id) VALUES(?,?) ON CONFLICT(user_id,message_id) DO NOTHING')
+    .run(req.user!.id,req.params.messageId);
+  res.status(result.changes?201:200).json({bookmarked:true});
+});
+app.delete('/api/messages/:messageId/bookmark', requireAuth, (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  db.prepare('DELETE FROM message_bookmarks WHERE user_id=? AND message_id=?').run(req.user!.id,req.params.messageId);
+  res.json({bookmarked:false});
+});
+
 // Message history cursor logic lives in message-history.ts and has focused tests.
 
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
@@ -1347,16 +1402,15 @@ io.on('connection',(socket)=>{
   };
   socket.join(`user:${user.id}`);
   socket.join(`session:${user.session_id}`);
-  const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
+  const cancelSessionExpiry=scheduleUntil(new Date(user.expires_at).getTime(),()=>socket.disconnect(true));
   // Send a rotation notice first. Clients reconnect only for this planned
   // disconnect; expired/revoked sessions do not send the notice.
   let rotationDisconnectTimer:NodeJS.Timeout|undefined;
   const functionLifetimeTimer=(process.env.VERCEL==='1'||!!process.env.VERCEL_ENV)
     ? setTimeout(()=>{socket.emit('relay:rotate');rotationDisconnectTimer=setTimeout(()=>socket.disconnect(true),250);},4*60*1000-250)
     : undefined;
-  sessionExpiryTimer.unref();
   functionLifetimeTimer?.unref();
-  socket.once('disconnect',()=>{clearTimeout(sessionExpiryTimer);if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);if(rotationDisconnectTimer)clearTimeout(rotationDisconnectTimer);});
+  socket.once('disconnect',()=>{cancelSessionExpiry();if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);if(rotationDisconnectTimer)clearTimeout(rotationDisconnectTimer);});
   socket.use((_packet,next)=>{
     const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
     if(!active){socket.disconnect(true);return;}
@@ -1455,7 +1509,7 @@ io.on('connection',(socket)=>{
     }
   });
   socket.on('disconnect',()=>{
-    clearTimeout(sessionExpiryTimer);
+    cancelSessionExpiry();
     if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);
     for(const room of socket.rooms){if(room.startsWith('voice:'))socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});}
   });

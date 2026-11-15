@@ -1009,7 +1009,26 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 });
 
 // Messages and search
-function messageRows(whereSql:string, params:any[], limit=60) {
+function pollSummary(pollId:string,userId:string) {
+  const poll=db.prepare('SELECT id,message_id,allow_multiple,ends_at,created_at FROM polls WHERE id=?').get(pollId) as any;
+  if(!poll)return null;
+  const options=db.prepare(`SELECT o.id,o.text,o.position,COUNT(v.user_id)::int AS vote_count,
+      COALESCE(BOOL_OR(v.user_id=?),FALSE) AS selected
+    FROM poll_options o LEFT JOIN poll_votes v ON v.option_id=o.id
+    WHERE o.poll_id=? GROUP BY o.id ORDER BY o.position ASC`).all(userId,pollId) as any[];
+  const total=db.prepare('SELECT COUNT(DISTINCT user_id)::int AS total FROM poll_votes WHERE poll_id=?').get(pollId) as any;
+  return {
+    id:poll.id,
+    allow_multiple:!!poll.allow_multiple,
+    ends_at:poll.ends_at,
+    is_closed:!!poll.ends_at&&new Date(poll.ends_at).getTime()<=Date.now(),
+    total_votes:Number(total?.total||0),
+    options:options.map(option=>({id:option.id,text:option.text,vote_count:Number(option.vote_count||0),selected:!!option.selected})),
+    selected_option_ids:options.filter(option=>option.selected).map(option=>option.id)
+  };
+}
+
+function messageRows(whereSql:string, params:any[], limit=60, userId:string|null=null) {
   return db.prepare(`SELECT m.*,u.username,u.avatar,forwarded_user.username AS forwarded_from_username,
     (SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions,
     (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments,
@@ -1020,7 +1039,8 @@ function messageRows(whereSql:string, params:any[], limit=60) {
       ...m,
       reactions:JSON.parse(m.reactions||'[]'),
       attachments:JSON.parse(m.attachments||'[]'),
-      read_by:JSON.parse(m.read_by||'[]')
+      read_by:JSON.parse(m.read_by||'[]'),
+      poll:(()=>{const poll=db.prepare('SELECT id FROM polls WHERE message_id=?').get(m.id) as any;return poll?pollSummary(poll.id,userId||''):null;})()
     }));
 }
 function markMessagesRead(messages:any[], userId:string, room:string, username:string) {
@@ -1115,7 +1135,7 @@ app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, as
       return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);
     }
     committed=true;
-    const message=messageRows('m.id=?',[messageId],1)[0];
+    const message=messageRows('m.id=?',[messageId],1,req.user!.id)[0];
     const room=destinationChannel?`channel:${destinationChannel.id}`:`dm:${p.data.dmId}`;
     io.to(room).emit('message:new',message);
     if(p.data.dmId){
@@ -1143,7 +1163,7 @@ app.get('/api/bookmarks', requireAuth, (req:AuthedRequest,res) => {
     ?canReadChannel(item.channel_id,req.user!.id)
     :item.dm_id&&canAccessDm(item.dm_id,req.user!.id))
     .map(item=>{
-      const message=messageRows('m.id=? AND m.deleted_at IS NULL',[item.message_id],1)[0];
+      const message=messageRows('m.id=? AND m.deleted_at IS NULL',[item.message_id],1,req.user!.id)[0];
       if(!message)return null;
       return {
         ...message,
@@ -1183,9 +1203,9 @@ app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,re
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.channel_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.channel_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.channelId, ...cursor.params] : [req.params.channelId];
-  const messages=messageRows(where,params);
+  const messages=messageRows(where,params,60,req.user!.id);
   markMessagesRead(messages,req.user!.id,`channel:${req.params.channelId}`,req.user!.username);
-  res.json({messages:messageRows(where,params)});
+  res.json({messages:messageRows(where,params,60,req.user!.id)});
 });
 app.get('/api/channels/:channelId/attachments', requireAuth, (req:AuthedRequest,res) => {
   if(!canReadChannel(req.params.channelId,req.user!.id))return fail(res,403,'Channel membership required.');
@@ -1201,15 +1221,23 @@ app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
   markDmConversationRead(req.params.dmId,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
-  res.json({messages:messageRows(where,params)});
+  res.json({messages:messageRows(where,params,60,req.user!.id)});
 });
 app.get('/api/dms/:dmId/messages/search', requireAuth, (req: AuthedRequest,res) => {
   if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
   const query=String(req.query.q||'').trim().slice(0,100);
   if(query.length<2)return res.json({messages:[]});
-  res.json({messages:messageRows('m.dm_id=? AND m.deleted_at IS NULL AND m.content ILIKE ?', [req.params.dmId, `%${query}%`], 100)});
+  res.json({messages:messageRows('m.dm_id=? AND m.deleted_at IS NULL AND m.content ILIKE ?', [req.params.dmId, `%${query}%`], 100,req.user!.id)});
 });
-const messageCreateSchema=z.object({content:z.string().max(4000).default(''),reply_to:z.string().optional(),uploadIds:z.array(z.string()).max(8).optional()}).refine(v=>v.content.trim().length>0 || !!v.uploadIds?.length,{message:'Write a message or attach a file.'});
+const messageCreateSchema=z.object({
+  content:z.string().max(4000).default(''),
+  reply_to:z.string().optional(),
+  uploadIds:z.array(z.string()).max(8).optional(),
+  poll:z.object({options:z.array(z.string().trim().min(1).max(80)).min(2).max(10),allowMultiple:z.boolean().default(false),durationHours:z.number().int().min(1).max(720).optional()}).optional()
+ }).refine(v=>v.content.trim().length>0||!!v.uploadIds?.length,{message:'Write a message or attach a file.'})
+ .refine(v=>!v.poll||v.content.trim().length>=3,{message:'A poll question must contain at least 3 characters.'})
+ .refine(v=>!v.poll||!v.uploadIds?.length,{message:'Polls cannot include file attachments yet.'})
+ .refine(v=>!v.poll||new Set(v.poll.options.map(option=>option.toLocaleLowerCase())).size===v.poll.options.length,{message:'Poll options must be unique.'});
 function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:string;dmId?:string}) {
   const p=messageCreateSchema.safeParse(req.body); if(!p.success)return fail(res,400,p.error.issues[0]?.message||'Invalid message.');
   if(destination.channelId){ if(!canReadChannel(destination.channelId,req.user!.id))return fail(res,403,'You cannot send messages in this channel.'); const c=db.prepare('SELECT * FROM channels WHERE id=?').get(destination.channelId) as any;
@@ -1239,17 +1267,57 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
         db.prepare('DELETE FROM staged_uploads WHERE id=? AND user_id=?').run(aid,req.user!.id);
       }
     }
+    if(p.data.poll){
+      const pollId=id();
+      const endsAt=p.data.poll.durationHours
+        ?new Date(Date.now()+p.data.poll.durationHours*60*60*1000).toISOString()
+        :null;
+      db.prepare('INSERT INTO polls(id,message_id,allow_multiple,ends_at) VALUES(?,?,?,?)')
+        .run(pollId,mid,p.data.poll.allowMultiple,endsAt);
+      p.data.poll.options.forEach((option,position)=>{
+        db.prepare('INSERT INTO poll_options(id,poll_id,text,position) VALUES(?,?,?,?)')
+          .run(id(),pollId,option,position);
+      });
+    }
     if(destination.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),destination.dmId);
     return {ok:true};
   })();
   if('error' in created && created.error==='slow_mode'){res.setHeader('Retry-After',String(created.retryAfter));return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);}
   if('error' in created && created.error==='upload_expired')return fail(res,403,'One of those uploads has expired or is no longer available. Attach it again.');
-  const row=messageRows(`m.id=?`,[mid],1)[0];
+  const row=messageRows(`m.id=?`,[mid],1,req.user!.id)[0];
   const room=destination.channelId?`channel:${destination.channelId}`:`dm:${destination.dmId}`; io.to(room).emit('message:new',row);
   if(destination.dmId){const users=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(destination.dmId,req.user!.id) as any[]; users.forEach(u=>notify(u.user_id,'dm',`Message from ${req.user!.username}`,p.data.content.slice(0,100),`/channels/@me/${destination.dmId}`));}
   else {const ch=db.prepare('SELECT server_id,name FROM channels WHERE id=?').get(destination.channelId) as any; const mentionIds=[...p.data.content.matchAll(/@\{([a-zA-Z0-9_-]+)\}/g)].map(m=>m[1]); mentionIds.forEach(uid=>{if(shouldNotifyChannelMention(req.user!.id,uid,canReadChannel(destination.channelId!,uid)))notify(uid,'mention',`Mention in #${ch.name}`,p.data.content.slice(0,100),`/channels/${ch.server_id}/${destination.channelId}`);});}
   res.status(201).json({message:row});
 }
+app.post('/api/polls/:pollId/vote', requireAuth, interactionLimiter, (req:AuthedRequest,res) => {
+  const poll=db.prepare('SELECT * FROM polls WHERE id=?').get(req.params.pollId) as any;
+  if(!poll)return fail(res,404,'Poll not found.');
+  if(!accessibleMessage(poll.message_id,req.user!.id))return fail(res,404,'Poll not found.');
+  const parsed=z.object({optionIds:z.array(z.string().min(1)).min(1).max(10)}).safeParse(req.body);
+  if(!parsed.success)return fail(res,400,'Choose at least one poll option.');
+  if(new Set(parsed.data.optionIds).size!==parsed.data.optionIds.length)return fail(res,400,'Poll options must be unique.');
+  if(!poll.allow_multiple&&parsed.data.optionIds.length>1)return fail(res,400,'This poll allows one answer only.');
+  const options=db.prepare('SELECT id FROM poll_options WHERE poll_id=?').all(poll.id) as any[];
+  const valid=new Set(options.map(option=>option.id));
+  if(parsed.data.optionIds.some(optionId=>!valid.has(optionId)))return fail(res,400,'One of those options does not belong to this poll.');
+  if(poll.ends_at&&new Date(poll.ends_at).getTime()<=Date.now())return fail(res,410,'This poll has ended.');
+  db.transaction(()=>{
+    db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`poll:${poll.id}`);
+    if(poll.ends_at&&new Date(poll.ends_at).getTime()<=Date.now())return;
+    db.prepare('DELETE FROM poll_votes WHERE poll_id=? AND user_id=?').run(poll.id,req.user!.id);
+    for(const optionId of parsed.data.optionIds){
+      db.prepare('INSERT INTO poll_votes(poll_id,option_id,user_id) VALUES(?,?,?)').run(poll.id,optionId,req.user!.id);
+    }
+  })();
+  const updatedPoll=pollSummary(poll.id,req.user!.id);
+  if(updatedPoll?.is_closed)return fail(res,410,'This poll has ended.');
+  const message=messageRows('m.id=?',[poll.message_id],1,req.user!.id)[0];
+  const room=message.channel_id?`channel:${message.channel_id}`:`dm:${message.dm_id}`;
+  io.to(room).emit('message:updated',message);
+  res.json({poll:updatedPoll});
+});
+
 app.post('/api/channels/:channelId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{channelId:req.params.channelId}));
 app.post('/api/dms/:dmId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{dmId:req.params.dmId}));
 app.patch('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
@@ -1260,7 +1328,7 @@ app.patch('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
   if(!canAccess)return fail(res,403,'Conversation access is required.');
   if(m.sender_id!==req.user!.id && !(serverId && hasPermission(serverId,req.user!.id,'manage_messages')))return fail(res,403,'You can only edit your own messages.');
   const p=z.object({content:z.string().trim().min(1).max(4000)}).safeParse(req.body); if(!p.success)return fail(res,400,'Message must contain 1 to 4000 characters.');
-  db.prepare('UPDATE messages SET content=?,edited_at=? WHERE id=?').run(p.data.content,now(),m.id); const row=messageRows('m.id=?',[m.id],1)[0]; io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:updated',row); res.json({message:row});
+  db.prepare('UPDATE messages SET content=?,edited_at=? WHERE id=?').run(p.data.content,now(),m.id); const row=messageRows('m.id=?',[m.id],1,req.user!.id)[0]; io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:updated',row); res.json({message:row});
 });
 app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) => {
   const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
@@ -1307,7 +1375,7 @@ app.post('/api/messages/:messageId/pin', requireAuth, (req: AuthedRequest,res) =
   if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
   if(!hasPermission(serverId,req.user!.id,'pin_messages'))return fail(res,403,'You do not have permission to pin messages.');
   db.prepare('UPDATE messages SET pinned=CASE pinned WHEN 1 THEN 0 ELSE 1 END WHERE id=?').run(m.id);
-  const updated=messageRows('m.id=?',[m.id],1)[0];
+  const updated=messageRows('m.id=?',[m.id],1,req.user!.id)[0];
   io.to(`channel:${m.channel_id}`).emit('message:updated',updated);
   res.json({pinned:!!updated.pinned});
 });

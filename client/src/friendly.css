@@ -88,11 +88,11 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
 .clubhouse-shell .workspace{background:transparent}
 
 /* Larger type and calmer controls across the app. */
-.clubhouse-shell .btn,.clubhouse-auth .btn{min-height:47px;padding:0 19px;border-radius:13px;font-size:14px;font-weight:750;box-shadow:none;transition:background .16s,transform .16s,border-color .16s}
-.clubhouse-shell .btn.primary,.clubhouse-auth .btn.primary{background:#477968;color:#fffdf8}
-.clubhouse-shell .btn.primary:hover,.clubhouse-auth .btn.primary:hover{background:#315f50}
-.clubhouse-shell .btn.secondary,.clubhouse-auth .btn.secondary{background:#f4f0e6;border-color:#e7dfd0;color:#3a5145}
-.clubhouse-shell .btn.secondary:hover,.clubhouse-auth .btn.secondary:hover{background:#ebe5d8;border-color:#d2c6b3}
+.clubhouse-shell .btn,.auth-screen .btn{min-height:47px;padding:0 19px;border-radius:13px;font-size:14px;font-weight:750;box-shadow:none;transition:background .16s,transform .16s,border-color .16s}
+.clubhouse-shell .btn.primary,.auth-screen .btn.primary{background:#477968;color:#fffdf8}
+.clubhouse-shell .btn.primary:hover,.auth-screen .btn.primary:hover{background:#315f50}
+.clubhouse-shell .btn.secondary,.auth-screen .btn.secondary{background:#f4f0e6;border-color:#e7dfd0;color:#3a5145}
+.clubhouse-shell .btn.secondary:hover,.auth-screen .btn.secondary:hover{background:#ebe5d8;border-color:#d2c6b3}
 .clubhouse-shell .page-content{width:min(100%,1400px);padding:36px 38px 58px}
 .clubhouse-shell .page-header h1{font-size:31px;letter-spacing:-1.1px;color:#293f35}
 .clubhouse-shell .page-header p{font-size:14px;line-height:1.7;color:#718077}
@@ -336,28 +336,28 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
 .clubhouse-shell .dm-empty-illustration span{background:#f0d28f;color:#57472b}
 
 /* Welcoming login screen. */
-.clubhouse-auth{background:#f5f2e9;color:#2d4338}
-.clubhouse-auth .auth-simple{width:min(1040px,100%);display:grid;grid-template-columns:minmax(0,.92fr) minmax(360px,1.08fr);grid-template-rows:auto 1fr;align-items:center;gap:10px 72px;position:relative}
-.clubhouse-auth .auth-simple:before{content:"";position:absolute;z-index:0;left:0;top:10%;width:42%;height:78%;background:#e5eee1;border:1px solid #d5e3d4;border-radius:32px}
-.clubhouse-auth .auth-simple .auth-brand{position:relative;z-index:1;grid-column:1;grid-row:1;justify-content:flex-start;color:#2f4b3e;font-size:25px;letter-spacing:-1px}
-.clubhouse-auth .auth-simple .auth-brand .brand-mark{background:#f0c66f;color:#3d4b38}
-.clubhouse-auth .auth-tagline{position:relative;z-index:1;grid-column:1;grid-row:2;align-self:start;max-width:390px;margin:0;padding:22px 25px 36px;color:#2e4a3b;text-align:left;font-size:clamp(35px,4vw,49px);font-weight:850;line-height:1.04;letter-spacing:-1.8px}
-.clubhouse-auth .auth-form-side{position:relative;z-index:1;grid-column:2;grid-row:1 / span 2;padding:0;background:transparent}
-.clubhouse-auth .auth-form-top{justify-content:flex-end;padding:0 5px 14px;color:#758278;font-size:13px}
-.clubhouse-auth .auth-form-top a{color:#477968;font-weight:800}
-.clubhouse-auth .auth-simple .auth-card{max-width:500px;margin:0;padding:35px;background:#fffdf8;border:1px solid #e6dfd2;border-radius:24px;box-shadow:0 18px 42px rgba(58,64,50,.08)}
-.clubhouse-auth .auth-card h1{color:#2f473b;font-size:28px;letter-spacing:-.9px}
-.clubhouse-auth .auth-form-heading p{color:#718077;font-size:14px;line-height:1.65}
-.clubhouse-auth .auth-card .form-stack{gap:16px}
-.clubhouse-auth .auth-card .field{gap:8px}
-.clubhouse-auth .auth-card .field>span{color:#46594d;font-size:13px;font-weight:750}
-.clubhouse-auth .auth-card input{min-height:49px;padding:12px 14px;background:#fffefa;border:1px solid #ded6c8;border-radius:12px;color:#293d33;font-size:15px!important}
-.clubhouse-auth .auth-input-wrap{min-height:49px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#fffefa;border:1px solid #ded6c8;border-radius:12px}
-.clubhouse-auth .auth-input-wrap input{flex:1;min-width:0;border:0;background:transparent}
-.clubhouse-auth .auth-input-wrap svg{color:#718277}
-.clubhouse-auth .auth-bottom{font-size:12px}
-.clubhouse-auth .auth-bottom a{color:#477968}
-.clubhouse-auth .form-error,.clubhouse-auth .form-success{font-size:13px;line-height:1.5}
+.auth-screen{background:#f5f2e9;color:#2d4338}
+.auth-screen .auth-simple{width:min(1040px,100%);display:grid;grid-template-columns:minmax(0,.92fr) minmax(360px,1.08fr);grid-template-rows:auto 1fr;align-items:center;gap:10px 72px;position:relative}
+.auth-screen .auth-simple:before{content:"";position:absolute;z-index:0;left:0;top:10%;width:42%;height:78%;background:#e5eee1;border:1px solid #d5e3d4;border-radius:32px}
+.auth-screen .auth-simple .auth-brand{position:relative;z-index:1;grid-column:1;grid-row:1;justify-content:flex-start;color:#2f4b3e;font-size:25px;letter-spacing:-1px}
+.auth-screen .auth-simple .auth-brand .brand-mark{background:#f0c66f;color:#3d4b38}
+.auth-screen .auth-tagline{position:relative;z-index:1;grid-column:1;grid-row:2;align-self:start;max-width:390px;margin:0;padding:22px 25px 36px;color:#2e4a3b;text-align:left;font-size:clamp(35px,4vw,49px);font-weight:850;line-height:1.04;letter-spacing:-1.8px}
+.auth-screen .auth-form-side{position:relative;z-index:1;grid-column:2;grid-row:1 / span 2;padding:0;background:transparent}
+.auth-screen .auth-form-top{justify-content:flex-end;padding:0 5px 14px;color:#758278;font-size:13px}
+.auth-screen .auth-form-top a{color:#477968;font-weight:800}
+.auth-screen .auth-simple .auth-card{max-width:500px;margin:0;padding:35px;background:#fffdf8;border:1px solid #e6dfd2;border-radius:24px;box-shadow:0 18px 42px rgba(58,64,50,.08)}
+.auth-screen .auth-card h1{color:#2f473b;font-size:28px;letter-spacing:-.9px}
+.auth-screen .auth-form-heading p{color:#718077;font-size:14px;line-height:1.65}
+.auth-screen .auth-card .form-stack{gap:16px}
+.auth-screen .auth-card .field{gap:8px}
+.auth-screen .auth-card .field>span{color:#46594d;font-size:13px;font-weight:750}
+.auth-screen .auth-card input{min-height:49px;padding:12px 14px;background:#fffefa;border:1px solid #ded6c8;border-radius:12px;color:#293d33;font-size:15px!important}
+.auth-screen .auth-input-wrap{min-height:49px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#fffefa;border:1px solid #ded6c8;border-radius:12px}
+.auth-screen .auth-input-wrap input{flex:1;min-width:0;border:0;background:transparent}
+.auth-screen .auth-input-wrap svg{color:#718277}
+.auth-screen .auth-bottom{font-size:12px}
+.auth-screen .auth-bottom a{color:#477968}
+.auth-screen .form-error,.auth-screen .form-success{font-size:13px;line-height:1.5}
 
 /* Responsive behavior; the mobile drawer stays usable and the art reflows. */
 @media(max-width:1100px){
@@ -376,7 +376,7 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
  .home-shortcut small{font-size:11px}
  .home-lower-grid{grid-template-columns:1fr}
  .clubhouse-shell .message-list{padding:0 18px}
- .clubhouse-auth .auth-simple{gap:10px 34px}
+ .auth-screen .auth-simple{gap:10px 34px}
 }
 @media(max-width:620px){
  .clubhouse-shell .server-rail{width:58px;padding:12px 0;gap:8px}
@@ -425,13 +425,13 @@ input::placeholder,textarea::placeholder{color:#829088!important;opacity:1}
  .clubhouse-shell .composer{min-height:56px}
  .clubhouse-shell .composer textarea{font-size:13px}
  .clubhouse-shell .composer-foot{font-size:9px}
- .clubhouse-auth{padding:20px 14px}
- .clubhouse-auth .auth-simple{width:min(500px,100%);display:flex;flex-direction:column;align-items:stretch;gap:14px}
- .clubhouse-auth .auth-simple:before{display:none}
- .clubhouse-auth .auth-simple .auth-brand{align-self:flex-start}
- .clubhouse-auth .auth-tagline{max-width:none;padding:12px 0 2px;text-align:left;font-size:34px}
- .clubhouse-auth .auth-simple .auth-card{padding:24px 20px}
- .clubhouse-auth .auth-form-top{justify-content:flex-start;padding:4px 0 10px}
+ .auth-screen{padding:20px 14px}
+ .auth-screen .auth-simple{width:min(500px,100%);display:flex;flex-direction:column;align-items:stretch;gap:14px}
+ .auth-screen .auth-simple:before{display:none}
+ .auth-screen .auth-simple .auth-brand{align-self:flex-start}
+ .auth-screen .auth-tagline{max-width:none;padding:12px 0 2px;text-align:left;font-size:34px}
+ .auth-screen .auth-simple .auth-card{padding:24px 20px}
+ .auth-screen .auth-form-top{justify-content:flex-start;padding:4px 0 10px}
  .clubhouse-shell .add-friend-form{gap:12px}
  .clubhouse-shell .friend-row{gap:9px}
  .clubhouse-shell .settings-card{padding:17px}

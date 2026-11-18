@@ -39,8 +39,10 @@ const allowedOrigins = new Set(
 );
 const isProd = process.env.NODE_ENV === 'production';
 const deploymentOrigin = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
+// Exact origin reserved for the Relay Desktop shell; never use a wildcard here.
+const RELAY_DESKTOP_ORIGIN = 'relay://app';
 function isAllowedOrigin(value?: string) {
-  return !!value && (allowedOrigins.has(value) || value === deploymentOrigin);
+  return !!value && (value === RELAY_DESKTOP_ORIGIN || allowedOrigins.has(value) || value === deploymentOrigin);
 }
 const cookieSecure = process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === 'true' : isProd;
 const cookieSameSite = process.env.COOKIE_SAME_SITE === 'lax' ? 'lax' : process.env.COOKIE_SAME_SITE === 'none' ? 'none' : (isProd ? 'none' : 'lax');

@@ -12,6 +12,8 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
+import nodemailer from 'nodemailer';
+import { generateEmailCode, hashEmailCode, matchesEmailCode } from './email-verification.js';
 import { Server as SocketServer } from 'socket.io';
 import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
@@ -49,6 +51,27 @@ const cookieSameSite = process.env.COOKIE_SAME_SITE === 'lax' ? 'lax' : process.
 const PORT = Number(process.env.PORT || 3001);
 const sessionSecret = process.env.SESSION_SECRET || 'development-only-change-this-secret-before-deploying';
 if (isProd && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) throw new Error('Production requires a SESSION_SECRET of at least 32 characters.');
+
+const gmailUser = process.env.GMAIL_USER?.trim() || '';
+const gmailAppPassword = process.env.GMAIL_APP_PASSWORD?.replace(/\\s+/g, '') || '';
+const emailVerificationConfigured = !!(gmailUser && gmailAppPassword);
+const emailTransporter = emailVerificationConfigured
+  ? nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailAppPassword } })
+  : null;
+const verificationEmailFrom = process.env.RELAY_EMAIL_FROM?.trim() || (gmailUser ? `Relay <${gmailUser}>` : 'Relay <no-reply@example.invalid>');
+const adminEmails = new Set((process.env.ADMIN_EMAILS || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
+function isRelayAdmin(email: string) { return adminEmails.has(email.trim().toLowerCase()); }
+function hashVerificationCode(userId: string, code: string) { return hashEmailCode(sessionSecret, userId, code); }
+async function sendVerificationEmail(to: string, code: string) {
+  if (!emailTransporter) throw new Error('Email verification is not configured. Add GMAIL_USER and GMAIL_APP_PASSWORD.');
+  await emailTransporter.sendMail({
+    from: verificationEmailFrom,
+    to,
+    subject: 'Your Relay verification code',
+    text: `Your Relay verification code is ${code}. It expires in 15 minutes. If you did not create this account, you can ignore this email.`,
+    html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#20252b"><h1>Welcome to Relay</h1><p>Enter this code to verify your email address:</p><div style="font-size:32px;font-weight:700;letter-spacing:8px;padding:18px 20px;background:#f0f3f2;border-radius:12px;display:inline-block">${code}</div><p>This code expires in 15 minutes. If you did not create this account, you can ignore this email.</p></div>`
+  });
+}
 function positiveSetting(name: string, fallback: number) {
   const value = Number(process.env[name] || fallback);
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number.`);
@@ -236,7 +259,7 @@ function disconnectSessionSockets(sessionId: string) {
 function disconnectUserSockets(userId: string) {
   io.in(`user:${userId}`).disconnectSockets(true);
 }
-type AuthedRequest = Request & { user?: { id: string; username: string; email: string; session_id: string } };
+type AuthedRequest = Request & { user?: { id: string; username: string; email: string; session_id: string; is_admin: boolean } };
 const sha = (value: string) => crypto.createHmac('sha256', sessionSecret).update(value).digest('hex');
 const id = () => nanoid(16);
 const now = () => new Date().toISOString();
@@ -247,19 +270,28 @@ const asyncRoute = (fn: (req: AuthedRequest, res: Response, next: NextFunction) 
 function auth(req: AuthedRequest, res: Response, next: NextFunction) {
   const token = req.cookies?.relay_session;
   if (!token) return fail(res, 401, 'Sign in to continue.');
-  const session = db.prepare(`SELECT s.id AS session_id,s.user_id,s.expires_at,u.username,u.email
+  const session = db.prepare(`SELECT s.id AS session_id,s.user_id,s.expires_at,u.username,u.email,u.email_verified
     FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?`).get(sha(token)) as any;
   if (!session || new Date(session.expires_at).getTime() <= Date.now()) {
     if (session) db.prepare('DELETE FROM sessions WHERE id=?').run(session.session_id);
     res.clearCookie('relay_session', { httpOnly: true, sameSite: cookieSameSite, secure: cookieSecure, path: '/' });
     return fail(res, 401, 'Your session expired. Sign in again.');
   }
-  req.user = { id: session.user_id, username: session.username, email: session.email, session_id: session.session_id };
+  if (!session.email_verified) {
+    db.prepare('DELETE FROM sessions WHERE id=?').run(session.session_id);
+    res.clearCookie('relay_session', { httpOnly: true, sameSite: cookieSameSite, secure: cookieSecure, path: '/' });
+    return res.status(403).json({ error: 'Verify your email before using Relay.', code: 'EMAIL_VERIFICATION_REQUIRED', email: session.email });
+  }
+  req.user = { id: session.user_id, username: session.username, email: session.email, session_id: session.session_id, is_admin: isRelayAdmin(session.email) };
   db.prepare('UPDATE sessions SET last_active=? WHERE id=?').run(now(), session.session_id);
   db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(), session.user_id);
   next();
 }
 const requireAuth = [auth];
+function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (!req.user?.is_admin) return fail(res, 403, 'Administrator access is required.');
+  next();
+}
 function membership(serverId: string, userId: string) {
   return db.prepare(`SELECT m.*,r.name AS role_name,r.permissions,r.position FROM memberships m LEFT JOIN roles r ON r.id=m.role_id WHERE m.server_id=? AND m.user_id=?`).get(serverId, userId) as any;
 }
@@ -342,6 +374,9 @@ function userPublic(row: any) {
     status_text: row.activity_visible === 0 ? '' : row.status_text, presence,
     created_at: row.created_at };
 }
+function authenticatedUser(row: any) {
+  return { ...userPublic(row), email: row.email, email_verified: !!row.email_verified, is_admin: isRelayAdmin(String(row.email || '')) };
+}
 function blockedEither(a: string, b: string) {
   return !!db.prepare('SELECT 1 FROM blocks WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?)').get(a,b,b,a);
 }
@@ -388,6 +423,7 @@ function getBoostSnapshot(userId:string){
 }
 
 const authLimiter = databaseRateLimit('auth',20,15*60*1000);
+const emailVerificationLimiter = databaseRateLimit('email-verification',8,15*60*1000);
 const interactionLimiter = databaseRateLimit('interaction',45,60*1000);
 app.get('/api/health', (_req, res) => {
   const productionStorageMissing = isProd ? missingStorageEnvironment : [];
@@ -415,7 +451,8 @@ app.get('/api/health', (_req, res) => {
       persistentStorage: persistentStorageEnabled,
       storageMode: persistentStorageEnabled ? 's3' : isProd ? 'unavailable' : 'local-disk',
       missingStorageEnvironment: productionStorageMissing,
-      passwordRecoveryConfigured
+      passwordRecoveryConfigured,
+      emailVerificationConfigured
     });
 });
 app.get('/api/voice/ice-servers', requireAuth, (_req,res) => {
@@ -427,35 +464,48 @@ app.get('/api/voice/ice-servers', requireAuth, (_req,res) => {
   res.json({iceServers});
 });
 
-app.post('/api/auth/register', authLimiter, asyncRoute(async (req, res) => {
+app.post('/api/auth/register', authLimiter, emailVerificationLimiter, asyncRoute(async (req, res) => {
   const schema = z.object({ email: z.string().email().max(254), username: z.string().trim().min(3).max(24).regex(/^[a-zA-Z0-9_.-]+$/), password: z.string().min(10).max(128).refine(passwordWithinBcryptLimit, 'Password must be no more than 72 UTF-8 bytes.') });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, parsed.error.issues[0]?.message || 'Check your details.');
+  if (!emailVerificationConfigured) return fail(res, 503, 'Email verification is not configured yet. The Relay administrator must add GMAIL_USER and GMAIL_APP_PASSWORD.');
   const email = parsed.data.email.toLowerCase();
   const username = parsed.data.username;
   if (db.prepare('SELECT 1 FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(email, username)) return fail(res, 409, 'That email or username is already in use.');
   const userId = id();
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  const code = generateEmailCode();
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  const resendAfter = new Date(Date.now() + 60 * 1000).toISOString();
   try {
     const createAccount=db.transaction(()=>{
-      db.prepare('INSERT INTO users(id,email,username,password_hash) VALUES(?,?,?,?)').run(userId,email,username,passwordHash);
+      db.prepare('INSERT INTO users(id,email,username,password_hash,email_verified) VALUES(?,?,?,?,FALSE)').run(userId,email,username,passwordHash);
       db.prepare('INSERT INTO settings(user_id,data) VALUES(?,?)').run(userId, JSON.stringify({ theme:'graphite', density:'comfortable', accent:'#8795a2', fontScale:100, reducedMotion:false, contrast:'normal', messageLayout:'cozy', keybinds:{ focusSearch:'Ctrl+K', toggleMembers:'Ctrl+Shift+M' } }));
+      db.prepare('INSERT INTO email_verification_codes(user_id,code_hash,expires_at,resend_after,attempts) VALUES(?,?,?,?,0)')
+        .run(userId,hashVerificationCode(userId,code),expiresAt,resendAfter);
     });
     createAccount();
   } catch(error:any) {
     if(error?.code==='23505')return fail(res,409,'That email or username is already in use.');
     throw error;
   }
-  createSession(req, res, userId);
-  const saved=db.prepare('SELECT * FROM users WHERE id=?').get(userId) as any; res.status(201).json({ user:{...userPublic(saved),email:saved.email} });
+  try {
+    await sendVerificationEmail(email,code);
+  } catch(error:any) {
+    console.error('Relay verification email send failed:',error?.message||'Unknown SMTP error');
+    db.prepare('DELETE FROM users WHERE id=?').run(userId);
+    return fail(res,502,'Relay could not send the verification email. Check the Gmail app-password configuration and try again.');
+  }
+  res.status(201).json({ verificationRequired:true, email, message:'Enter the six-digit code we sent to your email address.' });
 }));
 app.post('/api/auth/login', authLimiter, asyncRoute(async (req,res) => {
   const parsed = z.object({ login:z.string().min(1).max(254), password:z.string().min(1).max(128).refine(passwordWithinBcryptLimit,'Password input must be no more than 72 UTF-8 bytes.') }).safeParse(req.body);
   if (!parsed.success) return fail(res,400,'Enter your email or username and password.');
   const row = db.prepare('SELECT * FROM users WHERE LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?)').get(parsed.data.login,parsed.data.login) as any;
   if (!row || !(await bcrypt.compare(parsed.data.password,row.password_hash))) return fail(res,401,'Those sign-in details do not match.');
+  if (!row.email_verified) return res.status(403).json({ error:'Please verify your email before signing in.', code:'EMAIL_VERIFICATION_REQUIRED', email:row.email });
   createSession(req,res,row.id);
-  res.json({ user:{...userPublic(row),email:row.email} });
+  res.json({ user:authenticatedUser(row) });
 }));
 function createSession(req: Request,res: Response,userId: string) {
   const token = crypto.randomBytes(32).toString('base64url');
@@ -464,6 +514,69 @@ function createSession(req: Request,res: Response,userId: string) {
     .run(id(),userId,sha(token),String(req.headers['user-agent']||'').slice(0,300),expires);
   res.cookie('relay_session',token,{ httpOnly:true, sameSite:cookieSameSite, secure:cookieSecure, path:'/', maxAge:30*24*60*60*1000 });
 }
+app.post('/api/auth/verify-email', authLimiter, emailVerificationLimiter, asyncRoute(async (req,res) => {
+  const parsed=z.object({ email:z.string().email().max(254), code:z.string().regex(/^[0-9]{6}$/) }).safeParse(req.body);
+  if(!parsed.success)return fail(res,400,'Enter your email address and the six-digit code.');
+  const result=db.transaction(()=>{
+    const verification=db.prepare(`SELECT v.user_id,v.code_hash,v.expires_at,v.attempts,u.email,u.email_verified
+      FROM email_verification_codes v JOIN users u ON u.id=v.user_id
+      WHERE LOWER(u.email)=LOWER(?) FOR UPDATE`).get(parsed.data.email) as any;
+    if(!verification||verification.email_verified)return {error:'missing'};
+    if(new Date(verification.expires_at).getTime()<=Date.now()){
+      db.prepare('DELETE FROM email_verification_codes WHERE user_id=?').run(verification.user_id);
+      return {error:'expired'};
+    }
+    if(Number(verification.attempts)>=5){
+      db.prepare('DELETE FROM email_verification_codes WHERE user_id=?').run(verification.user_id);
+      return {error:'attempts'};
+    }
+    if(!matchesEmailCode(sessionSecret,verification.user_id,parsed.data.code,verification.code_hash)){
+      const attempts=Number(verification.attempts)+1;
+      if(attempts>=5)db.prepare('DELETE FROM email_verification_codes WHERE user_id=?').run(verification.user_id);
+      else db.prepare('UPDATE email_verification_codes SET attempts=? WHERE user_id=?').run(attempts,verification.user_id);
+      return {error:'invalid',remaining:Math.max(0,5-attempts)};
+    }
+    db.prepare('UPDATE users SET email_verified=TRUE WHERE id=?').run(verification.user_id);
+    db.prepare('DELETE FROM email_verification_codes WHERE user_id=?').run(verification.user_id);
+    return {userId:verification.user_id};
+  })();
+  if('error' in result){
+    if(result.error==='expired')return fail(res,400,'That code has expired. Request a new one.');
+    if(result.error==='attempts')return fail(res,429,'Too many incorrect codes. Request a new code.');
+    if(result.error==='invalid')return fail(res,400,`That code is not correct. ${result.remaining} attempts remaining.`);
+    return fail(res,400,'No pending email verification was found. Request a new code or create your account again.');
+  }
+  createSession(req,res,result.userId);
+  const user=db.prepare('SELECT * FROM users WHERE id=?').get(result.userId) as any;
+  res.json({ok:true,user:authenticatedUser(user)});
+}));
+app.post('/api/auth/resend-verification', authLimiter, emailVerificationLimiter, asyncRoute(async (req,res) => {
+  const parsed=z.object({ email:z.string().email().max(254) }).safeParse(req.body);
+  if(!parsed.success)return fail(res,400,'Enter the email address you used to create your account.');
+  if(!emailVerificationConfigured)return fail(res,503,'Email verification is not configured yet.');
+  const user=db.prepare('SELECT id,email,email_verified FROM users WHERE LOWER(email)=LOWER(?)').get(parsed.data.email) as any;
+  const generic={ok:true,message:'If that address has a pending Relay account, a new verification code has been sent.'};
+  if(!user||user.email_verified)return res.json(generic);
+  const previous=db.prepare('SELECT resend_after FROM email_verification_codes WHERE user_id=?').get(user.id) as any;
+  if(previous&&new Date(previous.resend_after).getTime()>Date.now()){
+    const retryAfterSeconds=Math.ceil((new Date(previous.resend_after).getTime()-Date.now())/1000);
+    res.setHeader('Retry-After',String(retryAfterSeconds));
+    return res.status(429).json({error:`Please wait ${retryAfterSeconds} seconds before requesting another code.`,retryAfterSeconds});
+  }
+  const code=generateEmailCode();
+  const expiresAt=new Date(Date.now()+15*60*1000).toISOString();
+  const resendAfter=new Date(Date.now()+60*1000).toISOString();
+  db.prepare(`INSERT INTO email_verification_codes(user_id,code_hash,expires_at,resend_after,attempts)
+    VALUES(?,?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET code_hash=EXCLUDED.code_hash,expires_at=EXCLUDED.expires_at,resend_after=EXCLUDED.resend_after,attempts=0,created_at=NOW()`)
+    .run(user.id,hashVerificationCode(user.id,code),expiresAt,resendAfter);
+  try{await sendVerificationEmail(user.email,code);}
+  catch(error:any){
+    console.error('Relay verification resend failed:',error?.message||'Unknown SMTP error');
+    db.prepare('DELETE FROM email_verification_codes WHERE user_id=?').run(user.id);
+    return fail(res,502,'Relay could not send the verification email. Try again later.');
+  }
+  res.json(generic);
+}));
 app.post('/api/auth/logout', requireAuth, (req: AuthedRequest,res) => {
   const token = req.cookies?.relay_session;
   if (token) {
@@ -476,7 +589,29 @@ app.post('/api/auth/logout', requireAuth, (req: AuthedRequest,res) => {
 });
 app.get('/api/auth/me', requireAuth, (req: AuthedRequest,res) => {
   const row = db.prepare('SELECT * FROM users WHERE id=?').get(req.user!.id) as any;
-  res.json({user:{...userPublic(row),email:row.email}});
+  res.json({user:authenticatedUser(row)});
+});
+app.get('/api/admin/overview', requireAuth, requireAdmin, (_req:AuthedRequest,res) => {
+  const count=(sql:string)=>Number((db.prepare(sql).get() as any)?.count||0);
+  res.setHeader('Cache-Control','private, no-store');
+  res.json({
+    users:count('SELECT COUNT(*) AS count FROM users'),
+    verifiedUsers:count('SELECT COUNT(*) AS count FROM users WHERE email_verified=TRUE'),
+    pendingVerifications:count('SELECT COUNT(*) AS count FROM users WHERE email_verified=FALSE'),
+    messages:count('SELECT COUNT(*) AS count FROM messages'),
+    communities:count('SELECT COUNT(*) AS count FROM servers'),
+    admins:adminEmails.size
+  });
+});
+app.get('/api/admin/users', requireAuth, requireAdmin, (req:AuthedRequest,res) => {
+  const query=String(req.query.q||'').trim().slice(0,80);
+  const limit=Math.min(100,Math.max(1,Number.parseInt(String(req.query.limit||'25'),10)||25));
+  const like=`%${query}%`;
+  const users=db.prepare(`SELECT id,email,username,email_verified,created_at,last_seen
+    FROM users WHERE (?='' OR username ILIKE ? OR email ILIKE ?)
+    ORDER BY created_at DESC LIMIT ?`).all(query,like,like,limit) as any[];
+  res.setHeader('Cache-Control','private, no-store');
+  res.json({users:users.map(user=>({...user,is_admin:isRelayAdmin(user.email)}))});
 });
 app.post('/api/auth/forgot-password', authLimiter, asyncRoute(async (req,res) => {
   const parsed=z.object({email:z.string().email().max(254)}).safeParse(req.body);
@@ -1326,7 +1461,7 @@ app.post('/api/presence/heartbeat', requireAuth, updatePresenceHeartbeat);
 function socketUser(cookieHeader='') {
   const match=cookieHeader.match(/(?:^|;\s*)relay_session=([^;]+)/); if(!match)return null;
   let token='';try{token=decodeURIComponent(match[1]);}catch{return null;}
-  const row=db.prepare(`SELECT s.id AS session_id,s.expires_at,u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`).get(sha(token),now()) as any; return row||null;
+  const row=db.prepare(`SELECT s.id AS session_id,s.expires_at,u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.email_verified=TRUE`).get(sha(token),now()) as any; return row||null;
 }
 io.use((socket,next)=>{
   const session=socketUser(socket.handshake.headers.cookie||'');

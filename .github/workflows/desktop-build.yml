@@ -1,0 +1,82 @@
+name: Relay Desktop builds
+
+on:
+  push:
+    branches:
+      - feat/relay-desktop-cross-platform
+      - fix/relay-desktop-production
+    paths:
+      - "client/**"
+      - "desktop/**"
+      - "server/src/index.ts"
+      - ".github/workflows/desktop-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            label: Windows
+            runner: windows-latest
+            build_command: dist:win
+            artifact_glob: "desktop/dist/*.exe"
+          - os: macos
+            label: macOS
+            runner: macos-latest
+            build_command: dist:mac
+            artifact_glob: |
+              desktop/dist/*.dmg
+              desktop/dist/*.zip
+          - os: linux
+            label: Linux
+            runner: ubuntu-latest
+            build_command: dist:linux
+            artifact_glob: |
+              desktop/dist/*.AppImage
+              desktop/dist/*.deb
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install website and server dependencies
+        run: npm install --workspaces --include-workspace-root=false --no-audit --no-fund
+
+      - name: Run backend tests
+        run: npm test
+
+      - name: Build the shared Relay website
+        run: npm run build:client
+
+      - name: Install desktop packaging dependencies
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Package desktop client
+        working-directory: desktop
+        run: npm run ${{ matrix.build_command }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-desktop-${{ matrix.os }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+          retention-days: 14

@@ -6,6 +6,7 @@ import './pwa';
 import './styles.css';
 import './friendly.css';
 import './nightfall.css';
+import './theme-overrides.css';
 import {applyRelayAppearance} from './theme';
 
 /* Paint the app with a complete default theme before the settings request finishes. */

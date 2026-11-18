@@ -1,0 +1,205 @@
+/*
+ * One theme contract for the whole Relay interface.
+ * Illustration artwork can keep its own colours; application surfaces, controls
+ * and text must always follow the selected theme tokens.
+ */
+:root[data-theme] body,
+:root[data-theme] .app-shell,
+:root[data-theme] .clubhouse-shell,
+:root[data-theme] .main-area,
+:root[data-theme] .workspace,
+:root[data-theme] .chat-page,
+:root[data-theme] .chat-main {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .server-rail,
+:root[data-theme] .side-panel,
+:root[data-theme] .topbar,
+:root[data-theme] .user-panel,
+:root[data-theme] .member-panel,
+:root[data-theme] .chat-heading,
+:root[data-theme] .home-board,
+:root[data-theme] .settings-card,
+:root[data-theme] .settings-nav,
+:root[data-theme] .profile-card,
+:root[data-theme] .server-card,
+:root[data-theme] .friend-row,
+:root[data-theme] .event-card,
+:root[data-theme] .inbox-row,
+:root[data-theme] .feature-card,
+:root[data-theme] .help-card,
+:root[data-theme] .club-card,
+:root[data-theme] .notification-popover,
+:root[data-theme] .modal,
+:root[data-theme] .auth-card,
+:root[data-theme] .auth-form-side {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .home-hero,
+:root[data-theme] .clubs-intro,
+:root[data-theme] .home-shortcut,
+:root[data-theme] .composer,
+:root[data-theme] .dm-search,
+:root[data-theme] .dm-search-inline,
+:root[data-theme] .clubs-search-bar,
+:root[data-theme] .home-pending-note,
+:root[data-theme] .notice-banner,
+:root[data-theme] .disclosure-note,
+:root[data-theme] .auth-story {
+  background: var(--panel-2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .field input,
+:root[data-theme] .field textarea,
+:root[data-theme] .field select,
+:root[data-theme] .search-input,
+:root[data-theme] .global-search,
+:root[data-theme] .composer textarea,
+:root[data-theme] .dm-search input {
+  background: var(--panel-2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .message-content,
+:root[data-theme] .message.incoming .message-content {
+  background: var(--panel-2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .message.own .message-content,
+:root[data-theme] .side-item.selected,
+:root[data-theme] .rail-home.active,
+:root[data-theme] .rail-home:hover,
+:root[data-theme] .dm-item.selected,
+:root[data-theme] .dm-item:hover {
+  background: var(--accent-soft) !important;
+  border-color: var(--line-strong) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .btn.primary,
+:root[data-theme] .composer-send,
+:root[data-theme] .relay-mark,
+:root[data-theme] .brand-mark {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: var(--button-text) !important;
+}
+
+:root[data-theme] .btn.secondary,
+:root[data-theme] .btn.ghost:hover,
+:root[data-theme] .icon-btn:hover,
+:root[data-theme] .message-tools,
+:root[data-theme] .reactions button {
+  background: var(--panel-3) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .btn.primary:hover,
+:root[data-theme] .composer-send:hover {
+  background: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
+}
+
+:root[data-theme] .brand,
+:root[data-theme] .crumb-title,
+:root[data-theme] .page-header h1,
+:root[data-theme] .page-header h2,
+:root[data-theme] .page-header h3,
+:root[data-theme] .home-hero h1,
+:root[data-theme] .clubs-intro h1,
+:root[data-theme] .home-board-heading h2,
+:root[data-theme] .club-card h2,
+:root[data-theme] .settings-card h3,
+:root[data-theme] .profile-card h1,
+:root[data-theme] .auth-card h1,
+:root[data-theme] .auth-story-copy h1,
+:root[data-theme] .message-meta b,
+:root[data-theme] .message-meta strong {
+  color: var(--text) !important;
+}
+
+:root[data-theme] .muted-note,
+:root[data-theme] .small-empty,
+:root[data-theme] .page-header p,
+:root[data-theme] .field > span,
+:root[data-theme] .field small,
+:root[data-theme] .message-meta time,
+:root[data-theme] .message-meta small,
+:root[data-theme] .home-shortcut small,
+:root[data-theme] .club-card p,
+:root[data-theme] .club-card-overline,
+:root[data-theme] .auth-story-copy p,
+:root[data-theme] .auth-form-top,
+:root[data-theme] input::placeholder,
+:root[data-theme] textarea::placeholder {
+  color: var(--muted) !important;
+}
+
+:root[data-theme] .server-rail,
+:root[data-theme] .side-panel,
+:root[data-theme] .topbar,
+:root[data-theme] .user-panel,
+:root[data-theme] .member-panel,
+:root[data-theme] .chat-heading,
+:root[data-theme] .side-top,
+:root[data-theme] .home-board,
+:root[data-theme] .settings-card,
+:root[data-theme] .settings-nav,
+:root[data-theme] .modal,
+:root[data-theme] .notification-popover,
+:root[data-theme] .profile-card,
+:root[data-theme] .club-card,
+:root[data-theme] .friend-row,
+:root[data-theme] .event-card,
+:root[data-theme] .inbox-row {
+  border-color: var(--line) !important;
+}
+
+:root[data-theme] .app-shell .server-icon:hover,
+:root[data-theme] .app-shell .server-icon.active,
+:root[data-theme] .app-shell .rail-link:hover,
+:root[data-theme] .app-shell .rail-link.active,
+:root[data-theme] .sidebar-create-club,
+:root[data-theme] .dm-new-message,
+:root[data-theme] .home-kicker,
+:root[data-theme] .hero-art-caption,
+:root[data-theme] .sidebar-welcome-mark {
+  background: var(--accent-soft) !important;
+  border-color: var(--line-strong) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme] .sidebar-boost,
+:root[data-theme] .sidebar-boost-copy strong,
+:root[data-theme] .sidebar-boost-copy small,
+:root[data-theme] .sidebar-boost-arrow {
+  color: var(--text) !important;
+}
+
+:root[data-theme] .auth-screen {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+}
+:root[data-theme] .auth-layout,
+:root[data-theme] .auth-card {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+:root[data-theme] .auth-screen input,
+:root[data-theme] .auth-input-wrap {
+  background: var(--panel-2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}

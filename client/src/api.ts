@@ -1,6 +1,26 @@
+declare global {
+  interface Window {
+    relayDesktop?: { apiOrigin: string };
+  }
+}
+
+const desktopApiOrigin = (() => {
+  const value = window.relayDesktop?.apiOrigin?.trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+})();
+
 const configuredBase = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
-export const apiBase = (configuredBase || '/api').replace(/\/$/, '');
-export const apiOrigin = apiBase.startsWith('http') ? apiBase.replace(/\/api$/, '') : window.location.origin;
+export const apiBase = desktopApiOrigin
+  ? `${desktopApiOrigin}/api`
+  : (configuredBase || '/api').replace(/\/$/, '');
+export const apiOrigin = desktopApiOrigin
+  || (apiBase.startsWith('http') ? apiBase.replace(/\/api$/, '') : window.location.origin);
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {

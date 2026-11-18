@@ -23,7 +23,7 @@ export const apiOrigin = desktopApiOrigin
   || (apiBase.startsWith('http') ? apiBase.replace(/\/api$/, '') : window.location.origin);
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string, readonly details?: Record<string, any>) {
     super(message);
     this.name = 'ApiError';
   }
@@ -49,7 +49,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     throw new ApiError('Relay could not reach the server. Check the API URL and whether the server is running.', 0);
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(typeof data?.error === 'string' ? data.error : `Request failed (${response.status}).`, response.status);
+  if (!response.ok) throw new ApiError(
+    typeof data?.error === 'string' ? data.error : `Request failed (${response.status}).`,
+    response.status,
+    typeof data?.code === 'string' ? data.code : undefined,
+    data && typeof data === 'object' ? data : undefined
+  );
   return data as T;
 }
 export const api = <T = any>(path: string) => request<T>(path);

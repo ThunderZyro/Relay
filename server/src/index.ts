@@ -53,7 +53,7 @@ const sessionSecret = process.env.SESSION_SECRET || 'development-only-change-thi
 if (isProd && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) throw new Error('Production requires a SESSION_SECRET of at least 32 characters.');
 
 const gmailUser = process.env.GMAIL_USER?.trim() || '';
-const gmailAppPassword = process.env.GMAIL_APP_PASSWORD?.replace(/\\s+/g, '') || '';
+const gmailAppPassword = process.env.GMAIL_APP_PASSWORD?.replaceAll(' ', '') || '';
 const emailVerificationConfigured = !!(gmailUser && gmailAppPassword);
 const emailTransporter = emailVerificationConfigured
   ? nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailAppPassword } })

@@ -5,6 +5,8 @@ export interface PublicUser {
   id: string;
   username: string;
   email?: string;
+  email_verified?: boolean;
+  is_admin?: boolean;
   avatar?: string | null;
   banner?: string | null;
   bio?: string;

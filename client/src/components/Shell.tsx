@@ -82,6 +82,7 @@ export default function Shell(){
          <Link to="/channels/@me" className={`side-item ${location.pathname.startsWith('/channels/@me')?'selected':''}`} onClick={()=>setMobileNav(false)}><MessageCircle size={17}/> Chats</Link>
          <Link to="/friends" className={`side-item ${location.pathname==='/friends'?'selected':''}`} onClick={()=>setMobileNav(false)}><Users size={17}/> Friends</Link>
          <Link to="/discover" className={`side-item ${location.pathname==='/discover'?'selected':''}`} onClick={()=>setMobileNav(false)}><Compass size={17}/> Explore</Link>
+         {user?.is_admin&&<Link to="/admin" className={`side-item ${location.pathname==='/admin'?'selected':''}`} onClick={()=>setMobileNav(false)}><Shield size={17}/> Admin panel</Link>}
        </div>
        <div className="dm-heading"><div><span>MESSAGES</span><small>{dms.length} conversations</small></div><Link to="/friends" className="dm-new-message" aria-label="Start a new chat" title="Start a new chat"><MessageSquarePlus size={16}/><span>New</span></Link></div>
        <div className="dm-tools">

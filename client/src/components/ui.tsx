@@ -14,15 +14,23 @@ export function Avatar({ name, src, size = 'md', presence }: { name: string; src
 export function Loading({ label = 'Loading' }: { label?: string }) {
   return <div className="loading-state"><LoaderCircle size={20} className="spin"/><span>{label}</span></div>;
 }
+type ModalStackEntry={element:HTMLElement;close:()=>void};
+const modalStack:ModalStackEntry[]=[];
+
 export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode }) {
   const titleId=useId();const dialogRef=useRef<HTMLElement>(null);const closeRef=useRef(onClose);closeRef.current=onClose;
   useEffect(()=>{
     const previous=document.activeElement instanceof HTMLElement?document.activeElement:null;
     const dialog=dialogRef.current;
-    const focusable=()=>Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')||[]).filter(el=>el.getAttribute('aria-hidden')!=='true');
-    (focusable()[0]||dialog)?.focus();
+    if(!dialog)return;
+    const entry:ModalStackEntry={element:dialog,close:()=>closeRef.current()};
+    modalStack.push(entry);
+    const isTop=()=>modalStack[modalStack.length-1]===entry;
+    const focusable=()=>Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(el=>el.getAttribute('aria-hidden')!=='true');
+    (focusable()[0]||dialog).focus();
     const onKeyDown=(event:KeyboardEvent)=>{
-      if(event.key==='Escape'){event.preventDefault();closeRef.current();return;}
+      if(!isTop())return;
+      if(event.key==='Escape'){event.preventDefault();entry.close();return;}
       if(event.key!=='Tab')return;
       const items=focusable();if(!items.length){event.preventDefault();dialog?.focus();return;}
       const first=items[0],last=items[items.length-1];
@@ -30,7 +38,12 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
       else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
     };
     document.addEventListener('keydown',onKeyDown);
-    return()=>{document.removeEventListener('keydown',onKeyDown);previous?.focus();};
+    return()=>{
+      document.removeEventListener('keydown',onKeyDown);
+      const index=modalStack.indexOf(entry);
+      if(index>=0)modalStack.splice(index,1);
+      if(previous?.isConnected)previous.focus();
+    };
   },[]);
   return <div className="modal-backdrop" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}><header><h2 id={titleId}>{title}</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><X size={18}/></button></header><div className="modal-body">{children}</div>{footer && <footer className="modal-footer">{footer}</footer>}</section></div>;
 }

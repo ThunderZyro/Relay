@@ -353,3 +353,256 @@ body,button,input,select,textarea {
 :root[data-theme="custom"] body * {
   font-family:var(--relay-font-family,Inter,ui-sans-serif,system-ui,sans-serif)!important;
 }
+
+
+/* Relay appearance: every Clubhouse surface follows the currently selected palette.
+   These scoped rules intentionally come last so legacy decorative styles cannot
+   leave one section in the old cream-and-charcoal palette. */
+:root[data-theme] .clubhouse-shell {
+  background:var(--bg)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.main-area,.workspace,.chat-page,.chat-main,.chat-scroll,.dm-empty-stage,.page-content,.settings-content) {
+  background:var(--bg)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.server-rail,.side-panel,.side-top,.user-panel,.topbar,.chat-heading,.dm-chat-heading,.member-panel,.settings-nav,.settings-card,.panel-card,.home-board,.home-shortcut,.friend-row,.event-card,.inbox-row,.help-card,.feature-card,.club-card,.profile-card,.server-card,.voice-card,.modal,.notification-popover,.side-more,.side-more-links,.dm-row-menu-popover,.add-friend-form) {
+  background:var(--panel)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.sidebar-welcome,.dm-search,.global-search,.search-input,.dm-search-inline,.composer,.empty-state,.home-hero,.clubs-intro,.clubs-search-bar,.clubs-empty,.message-content,.attachment,.reply-banner,.editing-banner,.file-chips span,.poll-card,.poll-choice,.voice-orb,.event-date,.welcome-card,.friend-session-note) {
+  background:var(--panel-2)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.sidebar-welcome-mark,.dm-empty-illustration,.empty-icon,.empty-doodle,.shortcut-art) {
+  background:var(--accent-soft)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--accent)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.side-item.selected,.dm-item.selected,.rail-home.active,.rail-link.active,.tabs button.active,.dm-filters button.active,.settings-nav>a.active,.message.own .message-content,.message.own .message-body,.reactions button,.dm-new-message,.home-kicker) {
+  background:var(--accent-soft)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.btn.primary,.composer-send,.install-relay-btn,.sidebar-create-club) {
+  background:var(--accent)!important;
+  border-color:var(--accent)!important;
+  color:var(--button-text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.btn.primary,.composer-send,.install-relay-btn,.sidebar-create-club):hover {
+  background:var(--accent-hover)!important;
+  border-color:var(--accent-hover)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.btn.secondary,.btn.ghost:hover,.icon-btn:hover,.side-item:hover,.dm-item:hover,.message-tools,.dm-row-menu-popover button:hover,.result-row:hover,.dm-filters button:hover,.server-icon:hover,.server-icon.active) {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.field input,.field textarea,.field select,input:not([type=checkbox]):not([type=radio]),select,textarea) {
+  background:var(--panel-2)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.brand,.crumb-title,.page-header h1,.page-header h2,.chat-heading h2,.dm-empty-stage h2,.home-hero h1,.clubs-intro h1,.home-board-heading h2,.club-card h2,.profile-card h1,.settings-card h3,.settings-nav h2,.message-meta strong,.message-meta b,.dm-item-copy b,.sidebar-welcome b,.friend-info b,.inbox-row b,.event-content h3,.help-card h3,.notification-row b) {
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.muted-note,.small-empty,.page-header p,.chat-heading p,.dm-empty-copy,.dm-empty-eyebrow,.settings-nav small,.message-meta time,.message-meta small,.dm-item-copy small,.dm-heading,.dm-heading>div>span,.dm-heading>div>small,.side-item,.side-action,.member-row,.global-search,.user-meta strong,.side-more>summary,.side-more-links a,.friend-info small,.inbox-row p,.event-content p,.help-card p,.notification-row small) {
+  color:var(--muted)!important;
+}
+:root[data-theme] .clubhouse-shell .user-meta small {color:var(--good)!important}
+:root[data-theme] .clubhouse-shell .side-item.selected svg,
+:root[data-theme] .clubhouse-shell .rail-link.active svg,
+:root[data-theme] .clubhouse-shell .dm-empty-illustration svg {
+  color:var(--accent)!important;
+}
+:root[data-theme] .clubhouse-shell .global-search kbd,
+:root[data-theme] .clubhouse-shell .tabs span {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--muted)!important;
+}
+:root[data-theme] .clubhouse-shell .notification-trigger i {
+  background:var(--danger)!important;
+  border-color:var(--panel)!important;
+}
+:root[data-theme] .clubhouse-shell .modal-backdrop {
+  background:color-mix(in srgb,var(--bg) 68%,transparent)!important;
+}
+
+
+/* Final palette contract for every part of the Clubhouse UI.
+   Keep these rules last: the earlier Clubhouse and Nightfall sheets contain
+   legacy cream/dark literals which must never override a selected theme. */
+:root[data-theme] .clubhouse-shell,
+:root[data-theme] .clubhouse-shell .main-area,
+:root[data-theme] .clubhouse-shell .workspace,
+:root[data-theme] .clubhouse-shell .page-content,
+:root[data-theme] .clubhouse-shell .settings-content,
+:root[data-theme] .clubhouse-shell .chat-page,
+:root[data-theme] .clubhouse-shell .chat-main,
+:root[data-theme] .clubhouse-shell .chat-scroll,
+:root[data-theme] .clubhouse-shell .dm-empty-stage {
+  background:var(--bg)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  .server-rail,.side-panel,.side-top,.user-panel,.topbar,.chat-heading,.dm-chat-heading,
+  .member-panel,.settings-nav,.settings-card,.panel-card,.home-board,.home-shortcut,
+  .friend-row,.event-card,.inbox-row,.help-card,.feature-card,.club-card,.profile-card,
+  .server-card,.voice-card,.modal,.notification-popover,.side-more,.side-more-links,
+  .dm-row-menu-popover,.add-friend-form,.theme-option,.conversation-card,.search-results,
+  .channel-category,.community-preview,.saved-message-list
+) {
+  background:var(--panel)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  .sidebar-welcome,.dm-search,.global-search,.search-input,.dm-search-inline,.composer,
+  .empty-state,.home-hero,.clubs-intro,.clubs-search-bar,.clubs-empty,.message-content,
+  .attachment,.reply-quote,.reply-banner,.editing-banner,.file-chips span,.poll-card,
+  .poll-choice,.voice-orb,.event-date,.welcome-card,.friend-session-note,.notice-banner,
+  .disclosure-note,.add-friend-form,.community-preview-stats,.reactions button,.tabs button,
+  .dm-search-inline input
+) {
+  background:var(--panel-2)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  .side-item.selected,.dm-item.selected,.rail-home.active,.rail-link.active,.server-icon.active,
+  .tabs button.active,.dm-filters button.active,.settings-nav>a.active,
+  .message.own .message-content,.message.own .message-body,.dm-new-message,.home-kicker,
+  .theme-option.chosen
+) {
+  background:var(--accent-soft)!important;
+  border-color:var(--line-strong)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  .btn.primary,.composer-send,.install-relay-btn,.sidebar-create-club,
+  .invite-logo,.relay-mark,.brand-mark
+) {
+  background:var(--accent)!important;
+  border-color:var(--accent)!important;
+  color:var(--button-text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.btn.primary,.composer-send,.install-relay-btn,.sidebar-create-club):hover {
+  background:var(--accent-hover)!important;
+  border-color:var(--accent-hover)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  .btn.secondary,.btn.ghost:hover,.icon-btn:hover,.side-item:hover,.dm-item:hover,
+  .message-tools,.dm-row-menu-popover button:hover,.result-row:hover,.dm-filters button:hover,
+  .server-icon:hover,.side-action:hover,.side-more-links a:hover,.composer-icon:hover
+) {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  .field input,.field textarea,.field select,input:not([type=checkbox]):not([type=radio]),
+  select,textarea,.composer textarea
+) {
+  background:var(--panel-2)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+:root[data-theme] .clubhouse-shell :is(
+  h1,h2,h3,h4,p,strong,b,label,summary,a,button,time,li,small,.brand,.crumb-title,
+  .page-header,.chat-heading,.message-meta,.dm-item-copy,.sidebar-welcome,.friend-info,
+  .inbox-row,.event-content,.help-card,.notification-row,.user-meta,.channel-nav-title
+) {
+  color:var(--text);
+}
+:root[data-theme] .clubhouse-shell :is(
+  .muted-note,.small-empty,.page-header p,.chat-heading p,.dm-empty-copy,.dm-empty-eyebrow,
+  .settings-nav small,.message-meta time,.message-meta small,.dm-item-copy small,.dm-heading,
+  .dm-heading>div>span,.dm-heading>div>small,.side-item,.side-action,.member-row,
+  .global-search,.side-more>summary,.side-more-links a,.friend-info small,.inbox-row p,
+  .event-content p,.help-card p,.notification-row small,.list-subhead,.server-card-meta,
+  .composer-foot,.message-time,.reply-quote,.typing-note
+) {
+  color:var(--muted)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.eyebrow,.home-kicker,.clubs-kicker,.home-board-kicker,.dm-empty-eyebrow,.chat-heading h2 span,.channel-symbol) {
+  color:var(--accent)!important;
+}
+:root[data-theme] .clubhouse-shell .user-meta small {color:var(--good)!important}
+:root[data-theme] .clubhouse-shell .btn.danger {background:var(--danger)!important;color:#fff!important}
+:root[data-theme] .clubhouse-shell .side-item.selected svg,
+:root[data-theme] .clubhouse-shell .rail-link.active svg,
+:root[data-theme] .clubhouse-shell .dm-empty-illustration svg,
+:root[data-theme] .clubhouse-shell .eyebrow svg {
+  color:var(--accent)!important;
+}
+:root[data-theme] .clubhouse-shell .rail-divider {background:var(--line)!important}
+:root[data-theme] .clubhouse-shell .server-icon.active:before {background:var(--accent)!important}
+:root[data-theme] .clubhouse-shell .global-search kbd,
+:root[data-theme] .clubhouse-shell .tabs span {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--muted)!important;
+}
+:root[data-theme] .clubhouse-shell .notification-trigger i {
+  background:var(--danger)!important;
+  border-color:var(--panel)!important;
+}
+:root[data-theme] .clubhouse-shell .modal-backdrop {
+  background:color-mix(in srgb,var(--bg) 68%,transparent)!important;
+}
+:root[data-theme] .clubhouse-shell .message:hover {background:color-mix(in srgb,var(--panel-3) 65%,transparent)!important}
+:root[data-theme] .clubhouse-shell .composer-wrap {
+  background:linear-gradient(180deg,color-mix(in srgb,var(--bg) 0%,transparent),var(--bg) 38%)!important;
+}
+:root[data-theme] .clubhouse-shell :is(.message-content,.message-body,.composer,.settings-card,.profile-card,.club-card) {
+  border-radius:var(--custom-message-radius,12px);
+}
+
+
+/* The server-rail create button follows the selected palette like other controls. */
+:root[data-theme] .clubhouse-shell .server-add {
+  background:var(--accent-soft)!important;
+  border-color:var(--line)!important;
+  color:var(--accent)!important;
+}
+:root[data-theme] .clubhouse-shell .server-add:hover {
+  background:var(--panel-3)!important;
+  border-color:var(--line)!important;
+  color:var(--text)!important;
+}
+
+
+/* Sidebar quick navigation and the persistent Relay Boost action. */
+.server-global-links {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:2px 5px;
+  padding:10px 9px 8px;
+  border-bottom:1px solid var(--line);
+}
+.server-global-links .side-item { min-width:0; height:34px; margin:0; padding:0 8px; font-size:12px; }
+.sidebar-boost {
+  display:flex; align-items:center; gap:10px; min-height:60px;
+  margin:10px 12px 9px; padding:9px 11px;
+  border:1px solid color-mix(in srgb,var(--accent) 38%,var(--line));
+  border-radius:12px;
+  background:linear-gradient(115deg,color-mix(in srgb,var(--accent) 17%,var(--panel)),var(--panel));
+  color:var(--text); text-decoration:none;
+  transition:transform .16s ease,border-color .16s ease,background .16s ease;
+  flex:none;
+}
+.sidebar-boost:hover,.sidebar-boost.active { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 22%,var(--panel)); transform:translateY(-1px); }
+.sidebar-boost:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.sidebar-boost-icon { width:34px; height:34px; display:grid; place-items:center; flex:none; border-radius:10px; background:var(--accent); color:var(--button-text); }
+.sidebar-boost-copy { display:flex; flex:1; min-width:0; flex-direction:column; gap:3px; }
+.sidebar-boost-copy strong { color:var(--text); font-size:12px; font-weight:750; }
+.sidebar-boost-copy small { color:var(--muted); font-size:10px; line-height:1.3; }
+.sidebar-boost-arrow { flex:none; color:var(--accent); }
+@media(max-width:540px) { .sidebar-boost { margin:8px 10px; min-height:56px; } }
+:root[data-theme] .clubhouse-shell .sidebar-boost { color:var(--text)!important; }
+:root[data-theme] .clubhouse-shell .sidebar-boost-copy strong { color:var(--text)!important; }
+:root[data-theme] .clubhouse-shell .sidebar-boost-copy small { color:var(--muted)!important; }
+:root[data-theme] .clubhouse-shell .sidebar-boost-arrow { color:var(--accent)!important; }

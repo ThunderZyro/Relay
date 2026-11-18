@@ -5,7 +5,7 @@ import {AuthProvider,useAuth,ToastProvider,useToast,announceAuthChange} from './
 import {api,post} from './api';
 import Shell from './components/Shell';
 import {Button,Field,Loading} from './components/ui';
-import {HomePage,FriendsPage,DiscoverPage,ProfilePage,InvitePage,EventsPage,InfoPage,InboxPage,HelpPage} from './pages/CorePages';
+import {HomePage,FriendsPage,DiscoverPage,ProfilePage,InvitePage,EventsPage,InfoPage,InboxPage,HelpPage,BookmarksPage} from './pages/CorePages';
 import {ChannelPage,DmPage} from './pages/ChatPages';
 import {SettingsPage,ServerSettingsPage} from './pages/SettingsPages';
 
@@ -115,7 +115,7 @@ function AppRoutes(){const {user,loading}=useAuth();if(loading)return <Loading l
  <Route path="/login" element={<AuthScreen mode="login"/>}/><Route path="/register" element={<AuthScreen mode="register"/>}/><Route path="/forgot-password" element={<PasswordRecovery/>}/><Route path="/reset-password" element={<PasswordRecovery reset/>}/>
  <Route element={<Protected/>}>
   <Route path="/" element={<Navigate to="/channels/@me" replace/>}/><Route path="/home" element={<HomePage/>}/><Route path="/channels/@me" element={<DmPage/>}/><Route path="/channels/@me/:conversationId" element={<DmPage/>}/>
-  <Route path="/channels/:serverId/:channelId?" element={<ChannelPage/>}/><Route path="/discover" element={<DiscoverPage/>}/><Route path="/friends" element={<FriendsPage/>}/><Route path="/events" element={<EventsPage/>}/><Route path="/inbox" element={<InboxPage/>}/><Route path="/help" element={<HelpPage/>}/>
+  <Route path="/channels/:serverId/:channelId?" element={<ChannelPage/>}/><Route path="/discover" element={<DiscoverPage/>}/><Route path="/friends" element={<FriendsPage/>}/><Route path="/events" element={<EventsPage/>}/><Route path="/inbox" element={<InboxPage/>}/><Route path="/bookmarks" element={<BookmarksPage/>}/><Route path="/help" element={<HelpPage/>}/>
   <Route path="/library" element={<InfoPage kind="library"/>}/><Route path="/activities" element={<InfoPage kind="library"/>}/><Route path="/premium" element={<InfoPage kind="premium"/>}/><Route path="/shop" element={<InfoPage kind="shop"/>}/>
   <Route path="/profile/:userId" element={<ProfilePage/>}/><Route path="/invite/:inviteCode" element={<InvitePage/>}/>
   <Route path="/settings" element={<Navigate to="/settings/account" replace/>}/><Route path="/settings/:section" element={<SettingsPage/>}/>

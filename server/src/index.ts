@@ -16,7 +16,10 @@ import { Server as SocketServer } from 'socket.io';
 import { createAdapter } from '@socket.io/postgres-adapter';
 import { Pool } from 'pg';
 import { databaseUrl, db, PERMISSIONS } from './db.js';
-import { createMessageHistoryCursor } from './message-history.js';
+import { createMessageHistoryCursor, unreadMessagesForUser } from './message-history.js';
+import { scheduleUntil } from './session-expiry.js';
+import { isPollClosed, validatePollOptions, validatePollSelection } from './poll-policy.js';
+import { dmPreferencePatchSchema, mergeDmPreferences } from './dm-preferences.js';
 import { shouldNotifyChannelMention } from './mention-policy.js';
 import { passwordWithinBcryptLimit } from './password-policy.js';
 import { canDirectMessagePeer as canDirectMessagePeerByPolicy } from './dm-policy.js';
@@ -327,6 +330,8 @@ async function deleteStoredObjects(storageNames: string[]) {
 function notify(userId: string, type: string, title: string, body: string, href: string) {
   const pref=db.prepare('SELECT data FROM settings WHERE user_id=?').get(userId) as any; let prefs:any={}; try{prefs=JSON.parse(pref?.data||'{}');}catch{}
   if((type==='dm' && prefs.dmNotifications===false) || (type==='mention' && prefs.mentionNotifications===false)) return;
+  const dmMatch=type==='dm'?href.match(/^\/channels\/@me\/([^/?#]+)/):null;
+  if(dmMatch && db.prepare('SELECT 1 FROM dm_user_preferences WHERE dm_id=? AND user_id=? AND is_muted=1').get(dmMatch[1],userId))return;
   const notificationId = id();
   db.prepare('INSERT INTO notifications(id,user_id,type,title,body,href) VALUES(?,?,?,?,?,?)')
     .run(notificationId, userId, type, title, body, href);
@@ -707,12 +712,18 @@ function dmSummary(dmId: string,userId: string) {
   const row=db.prepare(`SELECT d.*, (SELECT content FROM messages m WHERE m.dm_id=d.id AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message,
     (SELECT created_at FROM messages m WHERE m.dm_id=d.id AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS last_message_at,
     (SELECT COUNT(*) FROM messages unread WHERE unread.dm_id=d.id AND unread.sender_id<>? AND unread.deleted_at IS NULL
-      AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=unread.id AND mr.user_id=?)) AS unread_count
-    FROM dms d JOIN dm_members me ON me.dm_id=d.id WHERE d.id=? AND me.user_id=?`).get(userId,userId,dmId,userId) as any;
+      AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=unread.id AND mr.user_id=?)) AS unread_count,
+    COALESCE(pref.is_pinned,0) AS is_pinned,
+    COALESCE(pref.is_archived,0) AS is_archived,
+    COALESCE(pref.is_muted,0) AS is_muted,
+    COALESCE(pref.is_favorite,0) AS is_favorite
+    FROM dms d JOIN dm_members me ON me.dm_id=d.id
+    LEFT JOIN dm_user_preferences pref ON pref.dm_id=d.id AND pref.user_id=?
+    WHERE d.id=? AND me.user_id=?`).get(userId,userId,userId,dmId,userId) as any;
   if(!row)return null;
   if(!canAccessDm(dmId,userId))return null;
   const members=db.prepare(`SELECT u.id,u.username,u.avatar,CASE WHEN u.activity_visible=0 THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '2 minutes' THEN 'offline' WHEN CAST(u.last_seen AS timestamptz)<NOW()-INTERVAL '60 seconds' AND u.presence='online' THEN 'idle' ELSE u.presence END AS presence FROM dm_members m JOIN users u ON u.id=m.user_id WHERE m.dm_id=?`).all(dmId);
-  return {...row,members};
+  return {...row,is_pinned:!!row.is_pinned,is_archived:!!row.is_archived,is_muted:!!row.is_muted,is_favorite:!!row.is_favorite,members};
 }
 app.get('/api/dms', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare('SELECT dm_id FROM dm_members WHERE user_id=?').all(req.user!.id) as any[];
@@ -732,6 +743,25 @@ app.post('/api/dms', requireAuth, interactionLimiter, (req: AuthedRequest,res) =
   const dmId=id(); const tx=db.transaction(()=>{db.prepare('INSERT INTO dms(id,name,is_group,created_by) VALUES(?,?,?,?)').run(dmId,parsed.data.name||null,members.length>2?1:0,req.user!.id); const stmt=db.prepare('INSERT INTO dm_members(dm_id,user_id) VALUES(?,?)'); members.forEach(uid=>stmt.run(dmId,uid));}); tx();
   members.slice(1).forEach(uid=>notify(uid,'dm','New conversation',`${req.user!.username} started a conversation.`,`/channels/@me/${dmId}`));
   res.status(201).json({conversation:dmSummary(dmId,req.user!.id)});
+});
+app.post('/api/dms/:dmId/preferences', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
+  if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))
+    return fail(res,404,'Conversation not found.');
+  const parsed=dmPreferencePatchSchema.safeParse(req.body);
+  if(!parsed.success)return fail(res,400,parsed.error.issues[0]?.message||'Invalid chat settings.');
+  const current=db.prepare('SELECT is_pinned,is_archived,is_muted,is_favorite FROM dm_user_preferences WHERE dm_id=? AND user_id=?')
+    .get(req.params.dmId,req.user!.id) as any;
+  const next=mergeDmPreferences(current,parsed.data);
+  db.prepare(`INSERT INTO dm_user_preferences(dm_id,user_id,is_pinned,is_archived,is_muted,is_favorite)
+    VALUES(?,?,?,?,?,?)
+    ON CONFLICT(dm_id,user_id) DO UPDATE SET
+      is_pinned=EXCLUDED.is_pinned,
+      is_archived=EXCLUDED.is_archived,
+      is_muted=EXCLUDED.is_muted,
+      is_favorite=EXCLUDED.is_favorite,
+      updated_at=NOW()`)
+    .run(req.params.dmId,req.user!.id,next.is_pinned?1:0,next.is_archived?1:0,next.is_muted?1:0,next.is_favorite?1:0);
+  res.json({conversation:dmSummary(req.params.dmId,req.user!.id)});
 });
 app.patch('/api/dms/:dmId', requireAuth, (req: AuthedRequest,res) => {
   if(!db.prepare('SELECT 1 FROM dm_members WHERE dm_id=? AND user_id=?').get(req.params.dmId,req.user!.id))return fail(res,404,'Conversation not found.');
@@ -1010,22 +1040,42 @@ app.delete('/api/invites/:code', requireAuth, (req: AuthedRequest,res) => {
 });
 
 // Messages and search
-function messageRows(whereSql:string, params:any[], limit=60) {
-  return db.prepare(`SELECT m.*,u.username,u.avatar,
+function pollSummary(pollId:string,userId:string) {
+  const poll=db.prepare('SELECT id,message_id,allow_multiple,ends_at,created_at FROM polls WHERE id=?').get(pollId) as any;
+  if(!poll)return null;
+  const options=db.prepare(`SELECT o.id,o.text,o.position,COUNT(v.user_id)::int AS vote_count,
+      COALESCE(BOOL_OR(v.user_id=?),FALSE) AS selected
+    FROM poll_options o LEFT JOIN poll_votes v ON v.option_id=o.id
+    WHERE o.poll_id=? GROUP BY o.id ORDER BY o.position ASC`).all(userId,pollId) as any[];
+  const total=db.prepare('SELECT COUNT(DISTINCT user_id)::int AS total FROM poll_votes WHERE poll_id=?').get(pollId) as any;
+  return {
+    id:poll.id,
+    allow_multiple:!!poll.allow_multiple,
+    ends_at:poll.ends_at,
+    is_closed:isPollClosed(poll.ends_at),
+    total_votes:Number(total?.total||0),
+    options:options.map(option=>({id:option.id,text:option.text,vote_count:Number(option.vote_count||0),selected:!!option.selected})),
+    selected_option_ids:options.filter(option=>option.selected).map(option=>option.id)
+  };
+}
+
+function messageRows(whereSql:string, params:any[], limit=60, userId:string|null=null) {
+  return db.prepare(`SELECT m.*,u.username,u.avatar,forwarded_user.username AS forwarded_from_username,
     (SELECT COALESCE(json_agg(json_build_object('emoji',r.emoji,'user_id',r.user_id))::text,'[]') FROM reactions r WHERE r.message_id=m.id) reactions,
     (SELECT COALESCE(json_agg(json_build_object('id',a.id,'filename',a.filename,'mime',a.mime,'size',a.size))::text,'[]') FROM attachments a WHERE a.message_id=m.id) attachments,
     (SELECT COALESCE(json_agg(json_build_object('user_id',mr.user_id,'username',reader.username,'read_at',mr.read_at))::text,'[]')
       FROM message_reads mr JOIN users reader ON reader.id=mr.user_id WHERE mr.message_id=m.id) read_by
-    FROM messages m JOIN users u ON u.id=m.sender_id WHERE ${whereSql} ORDER BY m.created_at DESC,m.id DESC LIMIT ?`)
+    FROM messages m JOIN users u ON u.id=m.sender_id LEFT JOIN users forwarded_user ON forwarded_user.id=m.forwarded_from_user_id WHERE ${whereSql} ORDER BY m.created_at DESC,m.id DESC LIMIT ?`)
     .all(...params,limit).reverse().map((m:any)=>({
       ...m,
       reactions:JSON.parse(m.reactions||'[]'),
       attachments:JSON.parse(m.attachments||'[]'),
-      read_by:JSON.parse(m.read_by||'[]')
+      read_by:JSON.parse(m.read_by||'[]'),
+      poll:(()=>{const poll=db.prepare('SELECT id FROM polls WHERE message_id=?').get(m.id) as any;return poll?pollSummary(poll.id,userId||''):null;})()
     }));
 }
 function markMessagesRead(messages:any[], userId:string, room:string, username:string) {
-  const unread=messages.filter(message=>message.sender_id!==userId && !(message.read_by||[]).some((reader:any)=>reader.user_id===userId));
+  const unread=unreadMessagesForUser(messages,userId);
   if(!unread.length)return;
   const readAt=now();
   const ids=unread.map(message=>message.id);
@@ -1035,22 +1085,137 @@ function markMessagesRead(messages:any[], userId:string, room:string, username:s
     ON CONFLICT(message_id,user_id) DO NOTHING RETURNING message_id`).all(userId,readAt,...ids) as Array<{message_id:string}>;
   if(inserted.length)io.to(room).emit('message:read',{userId,username,messageIds:inserted.map(row=>row.message_id),readAt});
 }
-function markDmConversationRead(dmId:string,userId:string,room:string,username:string) {
-  const latestUnread=db.prepare(`SELECT m.id FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
-    AND NOT EXISTS(SELECT 1 FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id=?)
-    ORDER BY m.created_at DESC,m.id DESC LIMIT 60`).all(dmId,userId,userId) as Array<{id:string}>;
-  if(!latestUnread.length)return;
-  const readAt=now();
-  db.prepare(`INSERT INTO message_reads(message_id,user_id,read_at)
-    SELECT m.id,?,? FROM messages m WHERE m.dm_id=? AND m.sender_id<>? AND m.deleted_at IS NULL
-    ON CONFLICT(message_id,user_id) DO NOTHING`).run(userId,readAt,dmId,userId);
-  io.to(room).emit('message:read',{userId,username,messageIds:latestUnread.map(message=>message.id),readAt});
-}
 function sharedAttachments(whereSql:string,params:any[]) {
   return db.prepare(`SELECT a.id,a.filename,a.mime,a.size,m.created_at,u.username
     FROM attachments a JOIN messages m ON m.id=a.message_id JOIN users u ON u.id=m.sender_id
     WHERE ${whereSql} AND m.deleted_at IS NULL ORDER BY m.created_at DESC,m.id DESC LIMIT 100`).all(...params);
 }
+function accessibleMessage(messageId:string,userId:string) {
+  const message=db.prepare('SELECT id,channel_id,dm_id FROM messages WHERE id=? AND deleted_at IS NULL').get(messageId) as any;
+  if(!message)return null;
+  const allowed=message.channel_id?canReadChannel(message.channel_id,userId):message.dm_id?canAccessDm(message.dm_id,userId):false;
+  return allowed?message:null;
+}
+
+app.post('/api/messages/:messageId/forward', requireAuth, interactionLimiter, asyncRoute(async (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  const source=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any;
+  if(!source)return fail(res,404,'Message not found.');
+  const p=z.object({
+    channelId:z.string().min(1).max(128).optional(),
+    dmId:z.string().min(1).max(128).optional()
+  }).refine(value=>Boolean(value.channelId)!==Boolean(value.dmId),{message:'Choose exactly one destination.'}).safeParse(req.body);
+  if(!p.success)return fail(res,400,p.error.issues[0]?.message||'Choose a destination.');
+
+  let destinationChannel:any=null;
+  if(p.data.channelId){
+    destinationChannel=db.prepare('SELECT id,server_id,type,slow_mode,name FROM channels WHERE id=?').get(p.data.channelId) as any;
+    if(!destinationChannel||destinationChannel.type==='voice')return fail(res,404,'Text channel not found.');
+    if(!canReadChannel(destinationChannel.id,req.user!.id))return fail(res,403,'You cannot access that channel.');
+    if(!hasPermission(destinationChannel.server_id,req.user!.id,'send_messages'))return fail(res,403,'You do not have permission to send messages in that channel.');
+    if(isTimedOut(destinationChannel.server_id,req.user!.id))return fail(res,403,'Your server timeout is active.');
+  }else if(!canAccessDm(p.data.dmId!,req.user!.id)){
+    return fail(res,403,'You cannot access that conversation.');
+  }
+
+  const sourceFiles=db.prepare('SELECT filename,mime,size,storage_name FROM attachments WHERE message_id=? ORDER BY id').all(source.id) as any[];
+  const copiedFiles:Array<{id:string;filename:string;mime:string;size:number;storage_name:string}>=[];
+  let committed=false;
+  try{
+    for(const file of sourceFiles){
+      const bytes=await readUpload(file.storage_name);
+      const storageName=await storeUpload(bytes,file.mime);
+      copiedFiles.push({id:id(),filename:file.filename,mime:file.mime,size:file.size,storage_name:storageName});
+    }
+
+    const messageId=id();
+    const created=db.transaction(()=>{
+      if(destinationChannel){
+        db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`slow-mode:${destinationChannel.id}:${req.user!.id}`);
+        const channelState=db.prepare('SELECT slow_mode FROM channels WHERE id=?').get(destinationChannel.id) as any;
+        const latest=db.prepare('SELECT created_at FROM messages WHERE channel_id=? AND sender_id=? ORDER BY created_at DESC LIMIT 1').get(destinationChannel.id,req.user!.id) as any;
+        if(channelState?.slow_mode>0&&latest){
+          const remaining=channelState.slow_mode-(Date.now()-new Date(latest.created_at).getTime())/1000;
+          if(remaining>0)return {error:'slow_mode',retryAfter:Math.ceil(remaining)};
+        }
+      }
+      db.prepare(`INSERT INTO messages(id,channel_id,dm_id,sender_id,content,forwarded_from_message_id,forwarded_from_user_id)
+        VALUES(?,?,?,?,?,?,?)`).run(messageId,p.data.channelId||null,p.data.dmId||null,req.user!.id,source.content,source.forwarded_from_message_id||source.id,source.forwarded_from_user_id||source.sender_id);
+      for(const file of copiedFiles){
+        db.prepare('INSERT INTO attachments(id,message_id,filename,mime,size,storage_name) VALUES(?,?,?,?,?,?)')
+          .run(file.id,messageId,file.filename,file.mime,file.size,file.storage_name);
+      }
+      if(p.data.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),p.data.dmId);
+      return {ok:true};
+    })();
+
+    if('error' in created&&created.error==='slow_mode'){
+      await deleteStoredObjects(copiedFiles.map(file=>file.storage_name));
+      res.setHeader('Retry-After',String(created.retryAfter));
+      return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);
+    }
+    committed=true;
+    const message=messageRows('m.id=?',[messageId],1,req.user!.id)[0];
+    const room=destinationChannel?`channel:${destinationChannel.id}`:`dm:${p.data.dmId}`;
+    io.to(room).emit('message:new',message);
+    if(p.data.dmId){
+      const recipients=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(p.data.dmId,req.user!.id) as any[];
+      recipients.forEach(member=>notify(member.user_id,'dm',`Forwarded message from ${req.user!.username}`,String(source.content||'Attachment').slice(0,100),`/channels/@me/${p.data.dmId}`));
+    }
+    return res.status(201).json({message});
+  }catch(error){
+    if(!committed){try{await deleteStoredObjects(copiedFiles.map(file=>file.storage_name));}catch{/* Preserve the original forwarding error. */}}
+    throw error;
+  }
+}));
+
+app.get('/api/bookmarks', requireAuth, (req:AuthedRequest,res) => {
+  const saved=db.prepare(`SELECT b.message_id,b.created_at AS saved_at,m.channel_id,m.dm_id,
+      c.name AS channel_name,c.server_id,s.name AS server_name,d.name AS dm_name
+    FROM message_bookmarks b
+    JOIN messages m ON m.id=b.message_id
+    LEFT JOIN channels c ON c.id=m.channel_id
+    LEFT JOIN servers s ON s.id=c.server_id
+    LEFT JOIN dms d ON d.id=m.dm_id
+    WHERE b.user_id=? AND m.deleted_at IS NULL
+    ORDER BY b.created_at DESC LIMIT 100`).all(req.user!.id) as any[];
+  const bookmarks=saved.filter(item=>item.channel_id
+    ?canReadChannel(item.channel_id,req.user!.id)
+    :item.dm_id&&canAccessDm(item.dm_id,req.user!.id))
+    .map(item=>{
+      const message=messageRows('m.id=? AND m.deleted_at IS NULL',[item.message_id],1,req.user!.id)[0];
+      if(!message)return null;
+      return {
+        ...message,
+        saved_at:item.saved_at,
+        source_label:item.channel_id
+          ? `${item.server_name||'Server'} · #${item.channel_name||'channel'}`
+          : item.dm_name||'Direct message',
+        href:item.channel_id
+          ? `/channels/${item.server_id}/${item.channel_id}`
+          : `/channels/@me/${item.dm_id}`
+      };
+    }).filter(Boolean);
+  res.json({bookmarks});
+});
+
+app.get('/api/messages/:messageId/bookmark', requireAuth, (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  const saved=!!db.prepare('SELECT 1 FROM message_bookmarks WHERE user_id=? AND message_id=?').get(req.user!.id,req.params.messageId);
+  res.json({bookmarked:saved});
+});
+app.post('/api/messages/:messageId/bookmark', requireAuth, interactionLimiter, (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  const result=db.prepare('INSERT INTO message_bookmarks(user_id,message_id) VALUES(?,?) ON CONFLICT(user_id,message_id) DO NOTHING')
+    .run(req.user!.id,req.params.messageId);
+  res.status(result.changes?201:200).json({bookmarked:true});
+});
+app.delete('/api/messages/:messageId/bookmark', requireAuth, (req:AuthedRequest,res) => {
+  if(!accessibleMessage(req.params.messageId,req.user!.id))return fail(res,404,'Message not found.');
+  db.prepare('DELETE FROM message_bookmarks WHERE user_id=? AND message_id=?').run(req.user!.id,req.params.messageId);
+  res.json({bookmarked:false});
+});
+
 // Message history cursor logic lives in message-history.ts and has focused tests.
 
 app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,res) => {
@@ -1058,9 +1223,9 @@ app.get('/api/channels/:channelId/messages', requireAuth, (req: AuthedRequest,re
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.channel_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.channel_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.channelId, ...cursor.params] : [req.params.channelId];
-  const messages=messageRows(where,params);
+  const messages=messageRows(where,params,60,req.user!.id);
   markMessagesRead(messages,req.user!.id,`channel:${req.params.channelId}`,req.user!.username);
-  res.json({messages:messageRows(where,params)});
+  res.json({messages:messageRows(where,params,60,req.user!.id)});
 });
 app.get('/api/channels/:channelId/attachments', requireAuth, (req:AuthedRequest,res) => {
   if(!canReadChannel(req.params.channelId,req.user!.id))return fail(res,403,'Channel membership required.');
@@ -1075,16 +1240,25 @@ app.get('/api/dms/:dmId/messages', requireAuth, (req: AuthedRequest,res) => {
   const cursor = createMessageHistoryCursor(req.query.before, req.query.beforeId);
   const where = cursor ? `m.dm_id=? AND m.deleted_at IS NULL AND ${cursor.sql}` : 'm.dm_id=? AND m.deleted_at IS NULL';
   const params = cursor ? [req.params.dmId, ...cursor.params] : [req.params.dmId];
-  markDmConversationRead(req.params.dmId,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
-  res.json({messages:messageRows(where,params)});
+  const messages=messageRows(where,params,60,req.user!.id);
+  markMessagesRead(messages,req.user!.id,`dm:${req.params.dmId}`,req.user!.username);
+  res.json({messages:messageRows(where,params,60,req.user!.id)});
 });
 app.get('/api/dms/:dmId/messages/search', requireAuth, (req: AuthedRequest,res) => {
   if(!canAccessDm(req.params.dmId,req.user!.id))return fail(res,403,'Conversation access is unavailable.');
   const query=String(req.query.q||'').trim().slice(0,100);
   if(query.length<2)return res.json({messages:[]});
-  res.json({messages:messageRows('m.dm_id=? AND m.deleted_at IS NULL AND m.content ILIKE ?', [req.params.dmId, `%${query}%`], 100)});
+  res.json({messages:messageRows('m.dm_id=? AND m.deleted_at IS NULL AND m.content ILIKE ?', [req.params.dmId, `%${query}%`], 100,req.user!.id)});
 });
-const messageCreateSchema=z.object({content:z.string().max(4000).default(''),reply_to:z.string().optional(),uploadIds:z.array(z.string()).max(8).optional()}).refine(v=>v.content.trim().length>0 || !!v.uploadIds?.length,{message:'Write a message or attach a file.'});
+const messageCreateSchema=z.object({
+  content:z.string().max(4000).default(''),
+  reply_to:z.string().optional(),
+  uploadIds:z.array(z.string()).max(8).optional(),
+  poll:z.object({options:z.array(z.string().trim().min(1).max(80)).min(2).max(10),allowMultiple:z.boolean().default(false),durationHours:z.number().int().min(1).max(720).optional()}).optional()
+ }).refine(v=>v.content.trim().length>0||!!v.uploadIds?.length,{message:'Write a message or attach a file.'})
+ .refine(v=>!v.poll||v.content.trim().length>=3,{message:'A poll question must contain at least 3 characters.'})
+ .refine(v=>!v.poll||!v.uploadIds?.length,{message:'Polls cannot include file attachments yet.'})
+ .refine(v=>!v.poll||validatePollOptions(v.poll.options)===null,{message:'Poll options must be unique and contain 1 to 80 characters.'});
 function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:string;dmId?:string}) {
   const p=messageCreateSchema.safeParse(req.body); if(!p.success)return fail(res,400,p.error.issues[0]?.message||'Invalid message.');
   if(destination.channelId){ if(!canReadChannel(destination.channelId,req.user!.id))return fail(res,403,'You cannot send messages in this channel.'); const c=db.prepare('SELECT * FROM channels WHERE id=?').get(destination.channelId) as any;
@@ -1092,7 +1266,7 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
   } else {
     if(!canAccessDm(destination.dmId!,req.user!.id))return fail(res,403,'You cannot access this conversation.');
   }
-  if(p.data.reply_to){const parent=db.prepare('SELECT channel_id,dm_id FROM messages WHERE id=?').get(p.data.reply_to) as any;if(!parent || parent.channel_id!==(destination.channelId||null) || parent.dm_id!==(destination.dmId||null))return fail(res,400,'The replied-to message is not in this conversation.');}
+  if(p.data.reply_to){const parent=db.prepare('SELECT channel_id,dm_id FROM messages WHERE id=? AND deleted_at IS NULL').get(p.data.reply_to) as any;if(!parent || parent.channel_id!==(destination.channelId||null) || parent.dm_id!==(destination.dmId||null))return fail(res,400,'The replied-to message is not in this conversation.');}
   const mid=id();
   const created=db.transaction(()=>{
     if(destination.channelId){
@@ -1114,31 +1288,70 @@ function createMessage(req: AuthedRequest,res: Response,destination:{channelId?:
         db.prepare('DELETE FROM staged_uploads WHERE id=? AND user_id=?').run(aid,req.user!.id);
       }
     }
+    if(p.data.poll){
+      const pollId=id();
+      const endsAt=p.data.poll.durationHours
+        ?new Date(Date.now()+p.data.poll.durationHours*60*60*1000).toISOString()
+        :null;
+      db.prepare('INSERT INTO polls(id,message_id,allow_multiple,ends_at) VALUES(?,?,?,?)')
+        .run(pollId,mid,p.data.poll.allowMultiple,endsAt);
+      p.data.poll.options.forEach((option,position)=>{
+        db.prepare('INSERT INTO poll_options(id,poll_id,text,position) VALUES(?,?,?,?)')
+          .run(id(),pollId,option,position);
+      });
+    }
     if(destination.dmId)db.prepare('UPDATE dms SET last_message_at=? WHERE id=?').run(now(),destination.dmId);
     return {ok:true};
   })();
   if('error' in created && created.error==='slow_mode'){res.setHeader('Retry-After',String(created.retryAfter));return fail(res,429,`Slow mode is active. Try again in ${created.retryAfter} seconds.`);}
   if('error' in created && created.error==='upload_expired')return fail(res,403,'One of those uploads has expired or is no longer available. Attach it again.');
-  const row=messageRows(`m.id=?`,[mid],1)[0];
+  const row=messageRows(`m.id=?`,[mid],1,req.user!.id)[0];
   const room=destination.channelId?`channel:${destination.channelId}`:`dm:${destination.dmId}`; io.to(room).emit('message:new',row);
   if(destination.dmId){const users=db.prepare('SELECT user_id FROM dm_members WHERE dm_id=? AND user_id<>?').all(destination.dmId,req.user!.id) as any[]; users.forEach(u=>notify(u.user_id,'dm',`Message from ${req.user!.username}`,p.data.content.slice(0,100),`/channels/@me/${destination.dmId}`));}
   else {const ch=db.prepare('SELECT server_id,name FROM channels WHERE id=?').get(destination.channelId) as any; const mentionIds=[...p.data.content.matchAll(/@\{([a-zA-Z0-9_-]+)\}/g)].map(m=>m[1]); mentionIds.forEach(uid=>{if(shouldNotifyChannelMention(req.user!.id,uid,canReadChannel(destination.channelId!,uid)))notify(uid,'mention',`Mention in #${ch.name}`,p.data.content.slice(0,100),`/channels/${ch.server_id}/${destination.channelId}`);});}
   res.status(201).json({message:row});
 }
+app.post('/api/polls/:pollId/vote', requireAuth, interactionLimiter, (req:AuthedRequest,res) => {
+  const poll=db.prepare('SELECT * FROM polls WHERE id=?').get(req.params.pollId) as any;
+  if(!poll)return fail(res,404,'Poll not found.');
+  if(!accessibleMessage(poll.message_id,req.user!.id))return fail(res,404,'Poll not found.');
+  const parsed=z.object({optionIds:z.array(z.string().min(1)).min(1).max(10)}).safeParse(req.body);
+  if(!parsed.success)return fail(res,400,'Choose at least one poll option.');
+  const options=db.prepare('SELECT id FROM poll_options WHERE poll_id=?').all(poll.id) as any[];
+  const valid=new Set(options.map(option=>option.id));
+  const selectionError=validatePollSelection(parsed.data.optionIds,valid,!!poll.allow_multiple);
+  if(selectionError)return fail(res,400,selectionError);
+  if(isPollClosed(poll.ends_at))return fail(res,410,'This poll has ended.');
+  db.transaction(()=>{
+    db.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))').get(`poll:${poll.id}`);
+    if(isPollClosed(poll.ends_at))return;
+    db.prepare('DELETE FROM poll_votes WHERE poll_id=? AND user_id=?').run(poll.id,req.user!.id);
+    for(const optionId of parsed.data.optionIds){
+      db.prepare('INSERT INTO poll_votes(poll_id,option_id,user_id) VALUES(?,?,?)').run(poll.id,optionId,req.user!.id);
+    }
+  })();
+  const updatedPoll=pollSummary(poll.id,req.user!.id);
+  if(updatedPoll?.is_closed)return fail(res,410,'This poll has ended.');
+  const message=messageRows('m.id=?',[poll.message_id],1,req.user!.id)[0];
+  const room=message.channel_id?`channel:${message.channel_id}`:`dm:${message.dm_id}`;
+  io.to(room).emit('message:updated',message);
+  res.json({poll:updatedPoll});
+});
+
 app.post('/api/channels/:channelId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{channelId:req.params.channelId}));
 app.post('/api/dms/:dmId/messages', requireAuth, interactionLimiter, (req: AuthedRequest,res) => createMessage(req,res,{dmId:req.params.dmId}));
 app.patch('/api/messages/:messageId', requireAuth, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   let canAccess=false; let serverId:string|null=null;
   if(m.channel_id){const channel=db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any;serverId=channel?.server_id||null;canAccess=!!serverId&&canReadChannel(m.channel_id,req.user!.id);}
   else if(m.dm_id){canAccess=canAccessDm(m.dm_id,req.user!.id);}
   if(!canAccess)return fail(res,403,'Conversation access is required.');
   if(m.sender_id!==req.user!.id && !(serverId && hasPermission(serverId,req.user!.id,'manage_messages')))return fail(res,403,'You can only edit your own messages.');
   const p=z.object({content:z.string().trim().min(1).max(4000)}).safeParse(req.body); if(!p.success)return fail(res,400,'Message must contain 1 to 4000 characters.');
-  db.prepare('UPDATE messages SET content=?,edited_at=? WHERE id=?').run(p.data.content,now(),m.id); const row=messageRows('m.id=?',[m.id],1)[0]; io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:updated',row); res.json({message:row});
+  db.prepare('UPDATE messages SET content=?,edited_at=? WHERE id=?').run(p.data.content,now(),m.id); const row=messageRows('m.id=?',[m.id],1,req.user!.id)[0]; io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:updated',row); res.json({message:row});
 });
 app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   const serverId=m.channel_id?(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any)?.server_id:null;
   const canAccess=m.channel_id?canReadChannel(m.channel_id,req.user!.id):canAccessDm(m.dm_id,req.user!.id);
   if(!canAccess)return fail(res,403,'Conversation access is required.');
@@ -1149,7 +1362,7 @@ app.delete('/api/messages/:messageId', requireAuth, asyncRoute(async (req,res) =
   db.prepare('UPDATE messages SET deleted_at=?,content=? WHERE id=?').run(now(),'This message was deleted.',m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:deleted',{id:m.id}); res.json({ok:true});
 }));
 app.post('/api/messages/:messageId/report', requireAuth, interactionLimiter, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(!m.channel_id)return fail(res,400,'Only server-channel messages can be submitted to a server moderation queue.'); if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.' );
   const p=z.object({reason:z.string().trim().min(5).max(500)}).safeParse(req.body); if(!p.success)return fail(res,400,'Explain the concern in at least 5 characters.');
   const report = db.prepare('INSERT INTO message_reports(id,message_id,reporter_id,reason) VALUES(?,?,?,?) ON CONFLICT(message_id,reporter_id) DO NOTHING').run(id(),m.id,req.user!.id,p.data.reason);
@@ -1164,7 +1377,7 @@ app.post('/api/reports/:reportId/resolve', requireAuth, (req: AuthedRequest,res)
   const report=db.prepare(`SELECT r.id,c.server_id FROM message_reports r JOIN messages m ON m.id=r.message_id JOIN channels c ON c.id=m.channel_id WHERE r.id=?`).get(req.params.reportId) as any; if(!report)return fail(res,404,'Report not found.'); if(!hasPermission(report.server_id,req.user!.id,'manage_messages'))return fail(res,403,'You do not have permission.'); db.prepare("UPDATE message_reports SET status='resolved' WHERE id=?").run(report.id); res.json({ok:true});
 });
 app.post('/api/messages/:messageId/reactions', requireAuth, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m)return fail(res,404,'Message not found.');
   if(m.channel_id && !canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
   if(m.channel_id){
     const serverId=(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any)?.server_id;
@@ -1177,12 +1390,12 @@ app.post('/api/messages/:messageId/reactions', requireAuth, (req: AuthedRequest,
   const reactions=db.prepare('SELECT emoji,user_id FROM reactions WHERE message_id=?').all(m.id); io.to(m.channel_id?`channel:${m.channel_id}`:`dm:${m.dm_id}`).emit('message:reactions',{messageId:m.id,reactions}); res.json({reactions});
 });
 app.post('/api/messages/:messageId/pin', requireAuth, (req: AuthedRequest,res) => {
-  const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.messageId) as any; if(!m || !m.channel_id)return fail(res,404,'Channel message not found.');
+  const m=db.prepare('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL').get(req.params.messageId) as any; if(!m || !m.channel_id)return fail(res,404,'Channel message not found.');
   const serverId=(db.prepare('SELECT server_id FROM channels WHERE id=?').get(m.channel_id) as any).server_id;
   if(!canReadChannel(m.channel_id,req.user!.id))return fail(res,403,'Channel membership required.');
   if(!hasPermission(serverId,req.user!.id,'pin_messages'))return fail(res,403,'You do not have permission to pin messages.');
   db.prepare('UPDATE messages SET pinned=CASE pinned WHEN 1 THEN 0 ELSE 1 END WHERE id=?').run(m.id);
-  const updated=messageRows('m.id=?',[m.id],1)[0];
+  const updated=messageRows('m.id=?',[m.id],1,req.user!.id)[0];
   io.to(`channel:${m.channel_id}`).emit('message:updated',updated);
   res.json({pinned:!!updated.pinned});
 });
@@ -1206,7 +1419,20 @@ app.post('/api/notifications/read-all', requireAuth, (req: AuthedRequest,res) =>
 app.post('/api/notifications/:notificationId/read', requireAuth, (req: AuthedRequest,res) => {db.prepare('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?').run(now(),req.params.notificationId,req.user!.id);res.json({ok:true});});
 app.get('/api/events', requireAuth, (req: AuthedRequest,res) => {
   const rows=db.prepare(`SELECT e.*,s.name AS server_name,(SELECT status FROM event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_rsvp,(SELECT COUNT(*) FROM event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going_count FROM events e JOIN servers s ON s.id=e.server_id JOIN memberships m ON m.server_id=s.id AND m.user_id=? WHERE e.starts_at::timestamptz>=NOW() ORDER BY e.starts_at`).all(req.user!.id,req.user!.id);
-  res.json({events:rows});
+  const memberships=db.prepare(`SELECT s.id,s.owner_id,r.permissions FROM memberships m
+    JOIN servers s ON s.id=m.server_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.user_id=?`).all(req.user!.id) as any[];
+  const createServerIds=memberships.filter(item=>{
+    if(item.owner_id===req.user!.id)return true;
+    try{return (JSON.parse(item.permissions||'[]') as string[]).includes('manage_server');}
+    catch{return false;}
+  }).map(item=>item.id);
+  res.json({
+    events:rows.map((event:any)=>({
+      ...event,
+      can_manage:event.creator_id===req.user!.id||hasPermission(event.server_id,req.user!.id,'manage_server')
+    })),
+    create_server_ids:createServerIds
+  });
 });
 app.post('/api/servers/:serverId/events', requireAuth, (req: AuthedRequest,res) => {
   if(!hasPermission(req.params.serverId,req.user!.id,'manage_server'))return fail(res,403,'You do not have permission to create events.');
@@ -1228,7 +1454,7 @@ app.delete('/api/events/:eventId/rsvp', requireAuth, (req: AuthedRequest,res) =>
 
 // staged_uploads is intentionally private and only finalized when an authenticated message sends it.
  // staged_uploads is created by the versioned PostgreSQL migration in db.ts.
-const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','video/mp4']);
+const allowedMime = new Set(['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','application/zip','audio/mpeg','audio/ogg','audio/webm','video/mp4']);
 async function cleanupExpiredStagedUploads() {
   const expired=db.prepare("SELECT id,storage_name FROM staged_uploads WHERE created_at::timestamptz<=NOW()+?::interval").all(`-${stagedUploadTtlHours} hours`) as any[];
   for(const row of expired){
@@ -1349,16 +1575,15 @@ io.on('connection',(socket)=>{
   };
   socket.join(`user:${user.id}`);
   socket.join(`session:${user.session_id}`);
-  const sessionExpiryTimer=setTimeout(()=>socket.disconnect(true),Math.max(0,new Date(user.expires_at).getTime()-Date.now()));
+  const cancelSessionExpiry=scheduleUntil(new Date(user.expires_at).getTime(),()=>socket.disconnect(true));
   // Send a rotation notice first. Clients reconnect only for this planned
   // disconnect; expired/revoked sessions do not send the notice.
   let rotationDisconnectTimer:NodeJS.Timeout|undefined;
   const functionLifetimeTimer=(process.env.VERCEL==='1'||!!process.env.VERCEL_ENV)
     ? setTimeout(()=>{socket.emit('relay:rotate');rotationDisconnectTimer=setTimeout(()=>socket.disconnect(true),250);},4*60*1000-250)
     : undefined;
-  sessionExpiryTimer.unref();
   functionLifetimeTimer?.unref();
-  socket.once('disconnect',()=>{clearTimeout(sessionExpiryTimer);if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);if(rotationDisconnectTimer)clearTimeout(rotationDisconnectTimer);});
+  socket.once('disconnect',()=>{cancelSessionExpiry();if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);if(rotationDisconnectTimer)clearTimeout(rotationDisconnectTimer);});
   socket.use((_packet,next)=>{
     const active=db.prepare('SELECT 1 FROM sessions WHERE id=? AND user_id=? AND expires_at>?').get(user.session_id,user.id,now());
     if(!active){socket.disconnect(true);return;}
@@ -1457,7 +1682,7 @@ io.on('connection',(socket)=>{
     }
   });
   socket.on('disconnect',()=>{
-    clearTimeout(sessionExpiryTimer);
+    cancelSessionExpiry();
     if(functionLifetimeTimer)clearTimeout(functionLifetimeTimer);
     for(const room of socket.rooms){if(room.startsWith('voice:'))socket.to(room).emit('voice:participant',{userId:user.id,username:user.username,socketId:socket.id,state:'left'});}
   });

@@ -1810,3 +1810,67 @@ body {
  .composer-wrap{padding:8px 9px 11px}
  .member-panel{display:none}
 }
+
+
+/* Safe Markdown formatting inside Relay chat messages. */
+.message-content p{margin:0;white-space:normal}
+.message-content ul,.message-content ol{margin:4px 0;padding-left:23px}
+.message-content blockquote{margin:5px 0;padding:6px 10px;border-left:2px solid var(--accent);background:var(--panel-2);border-radius:0 7px 7px 0;color:var(--muted)}
+.message-content h2,.message-content h3,.message-content h4{margin:5px 0;font-size:1.08em;font-weight:700}
+.message-content a{color:var(--accent);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere}
+.message-content code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--panel-3);border:1px solid var(--line);border-radius:4px;padding:1px 4px;font-size:.95em}
+.message-content .message-code-block{margin:7px 0;padding:10px 12px;overflow:auto;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;white-space:pre}
+.message-content .message-code-block code{padding:0;border:0;background:transparent;white-space:pre}
+.message-spoiler{display:inline}
+.message-spoiler summary{display:inline;cursor:pointer;padding:0 5px;border-radius:4px;background:var(--panel-3);color:var(--muted);font-size:.9em}
+.message-spoiler[open] summary{display:none}
+.message-spoiler>span{padding:0 3px}
+
+.forwarded-message-label{display:flex;align-items:center;gap:5px;margin:0 0 3px;color:var(--muted);font-size:9px}
+
+
+/* Poll editor and live poll results. */
+.poll-card{margin:8px 0 5px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);max-width:460px}
+.poll-card-heading,.poll-choice-top,.poll-card-footer,.poll-editor-heading,.poll-option-editor{display:flex;align-items:center;justify-content:space-between;gap:9px}
+.poll-card-heading{margin-bottom:9px;font-size:12px}
+.poll-card-heading span,.poll-choice small,.poll-card-footer>span,.poll-editor-heading small{color:var(--muted);font-size:10px}
+.poll-choices{display:grid;gap:7px}
+.poll-choice{display:block;width:100%;padding:8px 9px;text-align:left;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:inherit;cursor:pointer}
+.poll-choice:disabled{cursor:default}
+.poll-choice.selected{border-color:var(--accent)}
+.poll-choice-top{font-size:12px}
+.poll-choice-top b{flex:1;font-weight:600}
+.poll-choice-top strong{font-variant-numeric:tabular-nums;font-size:11px}
+.poll-choice-indicator{display:grid;place-items:center;width:16px;height:16px;border:1px solid var(--line);border-radius:50%;font-size:10px}
+.poll-choice.selected .poll-choice-indicator{background:var(--accent);color:white;border-color:var(--accent)}
+.poll-choice-track{display:block;height:5px;margin:7px 0 4px;overflow:hidden;border-radius:99px;background:var(--panel-3)}
+.poll-choice-track>span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width .2s ease}
+.poll-choice small{display:block;text-align:right}
+.poll-card-footer{margin-top:10px}
+.poll-card-footer .btn{min-height:30px;padding:5px 10px;font-size:11px}
+.poll-editor-heading{margin:3px 0}
+.poll-option-editor input{flex:1;min-width:0}
+.poll-option-editor .icon-btn{flex:0 0 auto}
+.poll-checkbox{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text)}
+.poll-checkbox input{width:16px;height:16px;accent-color:var(--accent)}
+
+.voice-recording-note{display:flex;align-items:center;gap:8px;margin:0 0 7px;padding:6px 9px;border-radius:7px;background:var(--panel-2);color:var(--muted);font-size:11px}
+.voice-recording-note>span{width:8px;height:8px;border-radius:50%;background:#e14b59;box-shadow:0 0 0 3px rgba(225,75,89,.15);animation:relay-recording-pulse 1.2s infinite}
+.composer-icon.recording{color:#e14b59;background:rgba(225,75,89,.1)}
+@keyframes relay-recording-pulse{50%{opacity:.35}}
+
+/* Relay 2.0 — direct-message organization */
+.dm-row{display:flex;align-items:center;gap:3px;position:relative;min-width:0;padding-right:3px}
+.dm-row>.dm-item{flex:1;min-width:0}
+.dm-item-meta{display:flex;align-items:center;gap:4px;flex:none;overflow:visible!important}
+.dm-row-menu{position:relative;flex:none}
+.dm-row-menu>summary{list-style:none;width:27px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s ease,background .12s ease}
+.dm-row-menu>summary::-webkit-details-marker{display:none}
+.dm-row:hover .dm-row-menu>summary,.dm-row-menu[open]>summary,.dm-row-menu>summary:focus-visible{opacity:1}
+.dm-row-menu>summary:hover,.dm-row-menu[open]>summary{background:var(--panel-3);color:var(--text)}
+.dm-row-menu-popover{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:164px;padding:5px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(0,0,0,.28);display:grid;gap:2px}
+.dm-row-menu-popover button{width:100%;border:0;background:transparent;color:var(--text);border-radius:5px;padding:8px 9px;display:flex;align-items:center;gap:8px;text-align:left;font-size:11px;cursor:pointer}
+.dm-row-menu-popover button:hover{background:var(--panel-3)}
+.dm-filters{overflow-x:auto;scrollbar-width:thin}
+.dm-filters button{flex:none}
+@media(hover:none){.dm-row-menu>summary{opacity:1}}

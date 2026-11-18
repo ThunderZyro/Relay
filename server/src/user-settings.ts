@@ -30,7 +30,7 @@ export const userSettingsPatchSchema=z.object({
   density:z.enum(['comfortable','compact']).optional(),messageLayout:z.enum(['cozy','compact']).optional(),
   fontScale:z.number().int().min(85).max(125).optional(),reducedMotion:z.boolean().optional(),contrast:z.enum(['normal','high']).optional(),
   quietMode:z.boolean().optional(),dmNotifications:z.boolean().optional(),mentionNotifications:z.boolean().optional(),browserNotifications:z.boolean().optional(),
-  keybinds:z.object({focusSearch:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).refine(isValidShortcut,'Enter a shortcut with modifiers and one final key.').optional(),toggleMembers:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).optional()}).partial().optional(),
+  keybinds:z.object({focusSearch:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).refine(isValidShortcut,'Enter a shortcut with modifiers and one final key.').optional(),toggleMembers:z.string().min(1).max(40).regex(/^[A-Za-z0-9+]+$/).refine(isValidShortcut,'Enter a shortcut with modifiers and one final key.').optional()}).partial().optional(),
   voiceInputDeviceId:z.string().max(256).optional(),voiceOutputDeviceId:z.string().max(256).optional(),
   customTheme:customThemeColorsSchema.optional(),sidebarWidth:z.number().int().min(250).max(380).optional(),
   messageRadius:z.number().int().min(6).max(24).optional(),fontFamily:z.enum(['system','serif','mono']).optional()

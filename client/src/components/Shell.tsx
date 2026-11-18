@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {Link,Outlet,useLocation,useNavigate} from 'react-router-dom';
 import {io} from 'socket.io-client';
-import {Activity, Bell, CalendarDays, Compass, Download, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, Plus, Search, Settings, Shield, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus, ChevronDown} from 'lucide-react';
+import {Activity, Archive, Bell, BellOff, Bookmark, CalendarDays, Compass, Download, Headphones, HelpCircle, Home, Library, LogOut, Menu, MessageCircle, MoreHorizontal, Pin, Plus, Search, Settings, Shield, Star, Users, X, CircleDot, Hash, Volume2, Megaphone, UsersRound, MessageSquarePlus, ChevronDown, Zap, ArrowRight} from 'lucide-react';
 import {api,apiOrigin,post,del} from '../api';
 import {useAuth,useToast,announceAuthChange} from '../state';
 import {Avatar,Button,Field,Modal,SearchInput} from './ui';
@@ -9,10 +9,10 @@ import {hasRelayInstallPrompt,promptRelayInstall} from '../pwa';
 import {applyRelayAppearance} from '../theme';
 
 type Server={id:string;name:string;description:string;icon?:string|null;role_name?:string};
-type Dm={id:string;name?:string|null;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string;is_group?:boolean;unread_count?:number};
+type Dm={id:string;name?:string|null;last_message_at?:string|null;created_at?:string;members:{id:string;username:string;avatar?:string;presence:string}[];last_message?:string;is_group?:boolean;unread_count?:number;is_pinned?:boolean;is_archived?:boolean;is_muted?:boolean;is_favorite?:boolean};
 export default function Shell(){
  const {user,setUser}=useAuth();const toast=useToast();const navigate=useNavigate();const location=useLocation();
- const [servers,setServers]=useState<Server[]>([]);const [dms,setDms]=useState<Dm[]>([]);const [notifications,setNotifications]=useState<any[]>([]);const [searchOpen,setSearchOpen]=useState(false);const [search,setSearch]=useState('');const [searchResults,setSearchResults]=useState<any>(null);const [notifyOpen,setNotifyOpen]=useState(false);const [createOpen,setCreateOpen]=useState(false);const [serverName,setServerName]=useState('');const [serverDescription,setServerDescription]=useState('');const [mobileNav,setMobileNav]=useState(false);const [dmQuery,setDmQuery]=useState('');const [dmScope,setDmScope]=useState<'all'|'groups'|'online'>('all');const [keybinds,setKeybinds]=useState({focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'});const [installAvailable,setInstallAvailable]=useState(hasRelayInstallPrompt());
+ const [servers,setServers]=useState<Server[]>([]);const [dms,setDms]=useState<Dm[]>([]);const [notifications,setNotifications]=useState<any[]>([]);const [searchOpen,setSearchOpen]=useState(false);const [search,setSearch]=useState('');const [searchResults,setSearchResults]=useState<any>(null);const [notifyOpen,setNotifyOpen]=useState(false);const [createOpen,setCreateOpen]=useState(false);const [serverName,setServerName]=useState('');const [serverDescription,setServerDescription]=useState('');const [mobileNav,setMobileNav]=useState(false);const [dmQuery,setDmQuery]=useState('');const [dmScope,setDmScope]=useState<'all'|'unread'|'groups'|'online'|'favorites'|'archived'>('all');const [keybinds,setKeybinds]=useState({focusSearch:'Ctrl+K',toggleMembers:'Ctrl+Shift+M'});const [installAvailable,setInstallAvailable]=useState(hasRelayInstallPrompt());
  const serverMatch=location.pathname.match(/^\/channels\/([^/]+)(?:\/([^/]+))?/);const activeServer=serverMatch&&serverMatch[1]!=='@me'?serverMatch[1]:null;
  const [serverInfo,setServerInfo]=useState<any>(null);
  const load=async(showErrors=true)=>{try{const [s,d,n]=await Promise.all([api<{servers:Server[]}>('/servers'),api<{conversations:Dm[]}>('/dms'),api<{notifications:any[]}>('/notifications')]);setServers(s.servers);setDms(d.conversations);setNotifications(n.notifications);}catch(e:any){if(showErrors)toast.show(e.message,'error');}};
@@ -48,12 +48,41 @@ export default function Shell(){
   window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);
  },[keybinds]);
  useEffect(()=>{const query=search.trim();if(query.length<2){setSearchResults(null);return;}let active=true;setSearchResults(null);const timer=window.setTimeout(()=>api(`/search?q=${encodeURIComponent(query)}`).then(result=>{if(active)setSearchResults(result);}).catch(()=>{if(active)setSearchResults(null);}),250);return()=>{active=false;window.clearTimeout(timer);};},[search]);
- const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Plus';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname.includes('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
+ const title=useMemo(()=>{if(location.pathname.includes('/settings'))return 'Your settings';if(location.pathname.includes('/server/'))return 'Club settings';if(location.pathname.includes('/friends'))return 'People';if(location.pathname.includes('/discover'))return 'Find a club';if(location.pathname.includes('/events'))return 'Events';if(location.pathname.includes('/library'))return 'Library';if(location.pathname.includes('/premium'))return 'Relay Boost';if(location.pathname.includes('/shop'))return 'Shop';if(location.pathname.includes('/profile/'))return 'Profile';if(location.pathname.includes('/invite/'))return 'Invitation';if(location.pathname==='/channels/@me'||location.pathname.startsWith('/channels/@me/'))return 'Chats';if(serverInfo?.server)return serverInfo.server.name;return 'Home';},[location.pathname,serverInfo]);
  const createServer=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await post<{server:Server;channelId:string}>('/servers',{name:serverName,description:serverDescription});setCreateOpen(false);setServerName('');setServerDescription('');await load();navigate(`/channels/${r.server.id}/${r.channelId}`);toast.show('Your club is ready.','success');}catch(e:any){toast.show(e.message,'error');}};
  const logout=async()=>{try{await post('/auth/logout');setUser(null);announceAuthChange();navigate('/login');}catch(e:any){toast.show(e.message,'error');}};
  const markAll=async()=>{try{await post('/notifications/read-all');setNotifications(v=>v.map(n=>({...n,read_at:new Date().toISOString()})));}catch(e:any){toast.show(e.message,'error');}};
  const unread=notifications.filter(n=>!n.read_at).length;
- const filteredDms=dms.filter(dm=>{const others=dm.members.filter(m=>m.id!==user?.id);const label=(dm.name||others.map(m=>m.username).join(', ')).toLowerCase();const matches=label.includes(dmQuery.trim().toLowerCase());const group=!!dm.is_group||others.length>1;const online=others.some(m=>m.presence==='online');return matches&&(dmScope==='all'||(dmScope==='groups'&&group)||(dmScope==='online'&&online));});
+ const updateDmPreference=async(dmId:string,changes:Record<string,boolean>,menu?:HTMLDetailsElement|null)=>{
+  try{
+   const result=await post<{conversation:Dm}>(`/dms/${dmId}/preferences`,changes);
+   setDms(current=>current.map(dm=>dm.id===dmId?result.conversation:dm));
+   if(menu)menu.open=false;
+   toast.show('Chat settings updated.','success');
+  }catch(error:any){toast.show(error.message||'Could not update this chat.','error');}
+ };
+ const filteredDms=dms.filter(dm=>{
+  const others=dm.members.filter(m=>m.id!==user?.id);
+  const label=(dm.name||others.map(m=>m.username).join(', ')).toLowerCase();
+  const matches=label.includes(dmQuery.trim().toLowerCase());
+  const group=!!dm.is_group||others.length>1;
+  const online=others.some(m=>m.presence==='online');
+  const archived=!!dm.is_archived;
+  const matchesScope=dmScope==='archived'?archived:
+   dmScope==='unread'?!archived&&Number(dm.unread_count||0)>0:
+   dmScope==='groups'?!archived&&group:
+   dmScope==='online'?!archived&&online:
+   dmScope==='favorites'?!archived&&!!dm.is_favorite:
+   !archived;
+  return matches&&matchesScope;
+ }).sort((a,b)=>{
+  const pinned=Number(!!b.is_pinned)-Number(!!a.is_pinned);
+  if(pinned)return pinned;
+  const aTime=new Date(a.last_message_at||a.created_at||0).getTime()||0;
+  const bTime=new Date(b.last_message_at||b.created_at||0).getTime()||0;
+  return bTime-aTime;
+ });
+ const canManageChannels=!!activeServer&&(serverInfo?.server?.owner_id===user?.id||(()=>{try{return (JSON.parse(serverInfo?.member?.permissions||'[]') as string[]).includes('manage_channels');}catch{return false;}})());
  const selectedDm=location.pathname.match(/^\/channels\/@me\/([^/]+)/)?.[1];
  return <div className="app-shell clubhouse-shell">
    <div className={`server-rail ${mobileNav?'show':''}`}>
@@ -67,9 +96,15 @@ export default function Shell(){
      <div className="side-top"><Link to="/home" className="brand"><span className="brand-mark"><img src="/relay-mark.svg" alt=""/></span><span>relay</span></Link><button className="mobile-close icon-btn" onClick={()=>setMobileNav(false)} aria-label="Close navigation"><X size={19}/></button></div>
      {activeServer&&serverInfo?.server?<>
        <div className="server-heading"><div><strong>{serverInfo.server.name}</strong><small>{serverInfo.server.description||'Your club'}</small></div><button className="icon-btn" title="Club settings" onClick={()=>navigate(`/server/${activeServer}/settings/overview`)}><Settings size={17}/></button></div>
+       <nav className="server-global-links" aria-label="Quick navigation">
+         <Link to="/channels/@me" className="side-item" onClick={()=>setMobileNav(false)}><MessageCircle size={16}/> Chats</Link>
+         <Link to="/friends" className="side-item" onClick={()=>setMobileNav(false)}><Users size={16}/> Friends</Link>
+         <Link to="/events" className="side-item" onClick={()=>setMobileNav(false)}><CalendarDays size={16}/> Events</Link>
+         <Link to="/inbox" className="side-item" onClick={()=>setMobileNav(false)}><Bell size={16}/> Inbox</Link>
+       </nav>
        <div className="side-scroll server-sidebar-scroll">
-         <div className="channel-nav-title"><span>CHANNELS</span><button onClick={()=>navigate(`/server/${activeServer}/settings/channels`)} aria-label="Manage channels" title="Manage channels"><Plus size={15}/></button></div>
-         {(serverInfo.categories||[]).map((cat:any)=><details className="channel-category" key={cat.id} open><summary><ChevronDown size={13}/><span>{cat.name}</span><button onClick={e=>{e.preventDefault();navigate(`/server/${activeServer}/settings/channels`);}} aria-label={`Add channel to ${cat.name}`}><Plus size={13}/></button></summary>{(serverInfo.channels||[]).filter((c:any)=>c.category_id===cat.id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?<Volume2 size={15}/>:c.type==='announcement'?<Megaphone size={15}/>:<Hash size={15}/>}</span>{c.name}</Link>)}</details>)}
+         <div className="channel-nav-title"><span>CHANNELS</span>{canManageChannels&&<button onClick={()=>navigate(`/server/${activeServer}/settings/channels`)} aria-label="Manage channels" title="Manage channels"><Plus size={15}/></button>}</div>
+         {(serverInfo.categories||[]).map((cat:any)=><details className="channel-category" key={cat.id} open><summary><ChevronDown size={13}/><span>{cat.name}</span>{canManageChannels&&<button onClick={e=>{e.preventDefault();navigate(`/server/${activeServer}/settings/channels`);}} aria-label={`Add channel to ${cat.name}`}><Plus size={13}/></button>}</summary>{(serverInfo.channels||[]).filter((c:any)=>c.category_id===cat.id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?<Volume2 size={15}/>:c.type==='announcement'?<Megaphone size={15}/>:<Hash size={15}/>}</span>{c.name}</Link>)}</details>)}
          {(serverInfo.channels||[]).filter((c:any)=>!c.category_id).map((c:any)=><Link key={c.id} to={`/channels/${activeServer}/${c.id}`} className={`side-item ${serverMatch?.[2]===c.id?'selected':''}`} onClick={()=>setMobileNav(false)}><span className="channel-symbol">{c.type==='voice'?<Volume2 size={15}/>:c.type==='announcement'?<Megaphone size={15}/>:<Hash size={15}/>}</span>{c.name}</Link>)}
          <button className="side-action" onClick={()=>navigate(`/server/${activeServer}/settings/overview`)}><Settings size={15}/> Club settings</button>
          <button className="side-action" onClick={async()=>{try{await post(`/servers/${activeServer}/leave`);navigate('/channels/@me');toast.show('Left server.','success');}catch(e:any){toast.show(e.message,'error');}}}>Leave server</button>
@@ -82,33 +117,53 @@ export default function Shell(){
          <Link to="/channels/@me" className={`side-item ${location.pathname.startsWith('/channels/@me')?'selected':''}`} onClick={()=>setMobileNav(false)}><MessageCircle size={17}/> Chats</Link>
          <Link to="/friends" className={`side-item ${location.pathname==='/friends'?'selected':''}`} onClick={()=>setMobileNav(false)}><Users size={17}/> Friends</Link>
          <Link to="/discover" className={`side-item ${location.pathname==='/discover'?'selected':''}`} onClick={()=>setMobileNav(false)}><Compass size={17}/> Explore</Link>
+         <Link to="/events" className={`side-item ${location.pathname==='/events'?'selected':''}`} onClick={()=>setMobileNav(false)}><CalendarDays size={17}/> Events</Link>
+         <Link to="/inbox" className={`side-item ${location.pathname==='/inbox'?'selected':''}`} onClick={()=>setMobileNav(false)}><Bell size={17}/> Inbox</Link>
        </div>
        <div className="dm-heading"><div><span>MESSAGES</span><small>{dms.length} conversations</small></div><Link to="/friends" className="dm-new-message" aria-label="Start a new chat" title="Start a new chat"><MessageSquarePlus size={16}/><span>New</span></Link></div>
        <div className="dm-tools">
          <label className="dm-search"><Search size={15}/><input value={dmQuery} onChange={e=>setDmQuery(e.target.value)} placeholder="Search chats"/></label>
          <div className="dm-filters" role="group" aria-label="Filter conversations">
            <button className={dmScope==='all'?'active':''} onClick={()=>setDmScope('all')}>All</button>
-           <button className={dmScope==='groups'?'active':''} onClick={()=>setDmScope('groups')}>Groups</button>
+           <button className={dmScope==='unread'?'active':''} onClick={()=>setDmScope('unread')}>Unread</button>
            <button className={dmScope==='online'?'active':''} onClick={()=>setDmScope('online')}>Online</button>
+           <button className={dmScope==='groups'?'active':''} onClick={()=>setDmScope('groups')}>Groups</button>
+           <button className={dmScope==='favorites'?'active':''} onClick={()=>setDmScope('favorites')}>Starred</button>
+           <button className={dmScope==='archived'?'active':''} onClick={()=>setDmScope('archived')}>Archived</button>
          </div>
        </div>
        <div className="dm-list">
-         {filteredDms.slice(0,60).map(dm=>{const others=dm.members.filter(m=>m.id!==user?.id);const other=others[0];const label=dm.name||others.map(m=>m.username).join(', ');const group=!!dm.is_group||others.length>1;return <Link key={dm.id} to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`} onClick={()=>setMobileNav(false)}>
-           <span className="dm-avatar-wrap"><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="md" presence={!group?other?.presence:undefined}/>{group&&<i>{others.length+1}</i>}</span>
-           <span className="dm-item-copy"><b>{label}</b><small>{typeof dm.last_message==='string'&&dm.last_message.trim()?dm.last_message:group?'Group conversation':'Open conversation'}</small></span>
-           <span className="dm-item-meta">{group&&<UsersRound size={12}/>}{Number(dm.unread_count||0)>0&&<i className="dm-unread-count">{Number(dm.unread_count)>99?'99+':dm.unread_count}</i>}</span>
-         </Link>;})}
-         {!filteredDms.length&&<div className="dm-empty">{dmQuery?'No chats match that search.':dmScope==='groups'?'No group conversations yet.':dmScope==='online'?'No conversations with someone online.':'Your conversations will appear here.'}</div>}
+         {filteredDms.slice(0,60).map(dm=>{const others=dm.members.filter(m=>m.id!==user?.id);const other=others[0];const label=dm.name||others.map(m=>m.username).join(', ');const group=!!dm.is_group||others.length>1;return <div key={dm.id} className="dm-row">
+           <Link to={`/channels/@me/${dm.id}`} className={`dm-item ${selectedDm===dm.id?'selected':''}`} onClick={()=>setMobileNav(false)}>
+             <span className="dm-avatar-wrap"><Avatar name={dm.name||other?.username||'Group'} src={other?.avatar} size="md" presence={!group?other?.presence:undefined}/>{group&&<i>{others.length+1}</i>}</span>
+             <span className="dm-item-copy"><b>{label}</b><small>{typeof dm.last_message==='string'&&dm.last_message.trim()?dm.last_message:group?'Group conversation':'Open conversation'}</small></span>
+             <span className="dm-item-meta">{dm.is_pinned&&<Pin size={12}/>}{dm.is_favorite&&<Star size={12}/>}{dm.is_muted&&<BellOff size={12}/>}{group&&<UsersRound size={12}/>}{Number(dm.unread_count||0)>0&&<i className="dm-unread-count">{Number(dm.unread_count)>99?'99+':dm.unread_count}</i>}</span>
+           </Link>
+           <details className="dm-row-menu">
+             <summary aria-label={`Manage ${label}`} title="Chat options"><MoreHorizontal size={15}/></summary>
+             <div className="dm-row-menu-popover">
+               <button onClick={e=>{e.stopPropagation();void updateDmPreference(dm.id,{is_pinned:!dm.is_pinned},e.currentTarget.closest('details'))}}><Pin size={13}/>{dm.is_pinned?'Unpin chat':'Pin chat'}</button>
+               <button onClick={e=>{e.stopPropagation();void updateDmPreference(dm.id,{is_favorite:!dm.is_favorite},e.currentTarget.closest('details'))}}><Star size={13}/>{dm.is_favorite?'Remove star':'Add to starred'}</button>
+               <button onClick={e=>{e.stopPropagation();void updateDmPreference(dm.id,{is_muted:!dm.is_muted},e.currentTarget.closest('details'))}}><BellOff size={13}/>{dm.is_muted?'Unmute chat':'Mute chat'}</button>
+               <button onClick={e=>{e.stopPropagation();void updateDmPreference(dm.id,{is_archived:!dm.is_archived},e.currentTarget.closest('details'))}}><Archive size={13}/>{dm.is_archived?'Unarchive chat':'Archive chat'}</button>
+             </div>
+           </details>
+         </div>;})}
+         {!filteredDms.length&&<div className="dm-empty">{dmQuery?'No chats match that search.':dmScope==='groups'?'No group conversations yet.':dmScope==='online'?'No conversations with someone online.':dmScope==='unread'?'No unread conversations.':dmScope==='favorites'?'No starred chats yet.':dmScope==='archived'?'No archived conversations.':'Your conversations will appear here.'}</div>}
        </div>
        <details className="side-more">
          <summary>More places</summary>
          <div className="side-more-links">
-           <Link to="/events"><CalendarDays size={15}/> Events</Link>
-           <Link to="/inbox"><Bell size={15}/> Inbox</Link>
+           <Link to="/bookmarks"><Bookmark size={15}/> Saved messages</Link>
            <Link to="/library"><Library size={15}/> Library</Link>
          </div>
        </details>
      </>}
+     <Link to="/premium" className={`sidebar-boost ${location.pathname.startsWith('/premium')?'active':''}`} onClick={()=>setMobileNav(false)} aria-label="Open Relay Boost">
+       <span className="sidebar-boost-icon"><Zap size={18}/></span>
+       <span className="sidebar-boost-copy"><strong>Boost Relay</strong><small>Support Relay and unlock perks</small></span>
+       <ArrowRight className="sidebar-boost-arrow" size={16}/>
+     </Link>
      <div className="user-panel"><Avatar name={user?.username||'User'} src={user?.avatar} size="md" presence={user?.presence}/><div className="user-meta"><strong>{user?.username}</strong><small>{user?.presence||'offline'}</small></div><button className="icon-btn" onClick={logout} title="Log out" aria-label="Log out"><LogOut size={17}/></button><button className="icon-btn" onClick={()=>navigate('/settings/account')} title="User settings" aria-label="User settings"><Settings size={17}/></button></div>
    </aside>
    <main className="main-area">

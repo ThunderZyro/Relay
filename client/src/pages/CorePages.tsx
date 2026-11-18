@@ -1,6 +1,6 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {Link,useNavigate,useParams,useLocation} from 'react-router-dom';
-import {Activity,ArrowRight,CalendarDays,Check,Compass,Globe,MessageCircle,Plus,Search,Shield,Ban,UserPlus,Users,X,Clock,BookOpen,Gift,ExternalLink,Lock,Camera,Save,Mail,Monitor,Volume2,Mic,Eye,Trash2,RefreshCw,Copy,Settings,Hash,VolumeX,ChevronRight} from 'lucide-react';
+import {Activity,ArrowRight,Bookmark,CalendarDays,Check,Compass,Globe,MessageCircle,Plus,Search,Shield,Ban,UserPlus,Users,X,Clock,BookOpen,Gift,ExternalLink,Lock,Camera,Save,Mail,Monitor,Volume2,Mic,Eye,Trash2,RefreshCw,Copy,Settings,Hash,VolumeX,ChevronRight,Zap} from 'lucide-react';
 import {api,post,patch,put,del} from '../api';
 import {useAuth,useToast} from '../state';
 import {Avatar,Button,EmptyState,Field,Loading,Modal,PageHeader,SearchInput} from '../components/ui';
@@ -118,18 +118,42 @@ export function ProfilePage(){
   };
  },[userId]);
  const relationship=friends.find(f=>f.user.id===userId);const save=async(e:React.FormEvent)=>{e.preventDefault();try{const r=await patch<any>('/profile',form);setProfile(r.user);setEditOpen(false);toast.show('Profile updated.','success');}catch(e:any){toast.show(e.message,'error');}};
- const friend=async()=>{try{if(relationship){await del(`/friends/${relationship.id}`);}else{await post('/friends/request',{username:profile.username});}await load();toast.show(relationship?'Friend relationship removed.':'Friend request sent.','success');}catch(e:any){toast.show(e.message,'error');}};
+ const friend=async()=>{
+  try{
+   if(relationship?.status==='pending'&&relationship.direction==='incoming'){
+    await post(`/friends/${relationship.id}/accept`);
+    await load();
+    toast.show('Friend request accepted.','success');
+   }else if(relationship?.status==='accepted'||(relationship?.status==='pending'&&relationship.direction==='outgoing')){
+    await del(`/friends/${relationship.id}`);
+    await load();
+    toast.show(relationship.status==='accepted'?'Friend relationship removed.':'Friend request cancelled.','success');
+   }else{
+    await post('/friends/request',{username:profile.username});
+    await load();
+    toast.show('Friend request sent.','success');
+   }
+  }catch(e:any){toast.show(e.message,'error');}
+ };
  const dm=async()=>{try{const r=await post<any>('/dms',{userIds:[userId]});navigate(`/channels/@me/${r.conversation.id}`);}catch(e:any){toast.show(e.message,'error');}};
  const block=async()=>{try{if(blocked){await del(`/blocks/${userId}`);}else{await post(`/blocks/${userId}`);}setBlocked(!blocked);toast.show(blocked?'User unblocked.':'User blocked.','success');}catch(e:any){toast.show(e.message,'error');}};
  if(loading)return <Loading/>;if(!profile)return <EmptyState title="Profile unavailable" description="This user does not exist or is no longer available."/>;
- return <div className="page-content profile-page"><div className="profile-banner" style={profile.banner?{backgroundImage:`url(${profile.banner})`}:{}}/><div className="profile-card"><Avatar name={profile.username} src={profile.avatar} size="xl" presence={own?'online':profile.presence}/><div className="profile-actions">{own?<Button onClick={()=>setEditOpen(true)}>Edit profile</Button>:<><Button onClick={()=>void friend()}>{relationship?.status==='accepted'?'Remove friend':relationship?.status==='pending'?'Cancel request':'Add friend'}</Button><Button variant="secondary" onClick={()=>void dm()}><MessageCircle size={15}/> Message</Button><Button variant="ghost" onClick={()=>void block()}>{blocked?'Unblock':'Block'}</Button></>}</div><h1>{profile.username}</h1><p className="profile-status">{profile.status_text||'No status set'}</p><p>{profile.bio||'This user has not written a bio yet.'}</p><div className="profile-meta"><span><Activity size={14}/> {own?'Your account':profile.presence}</span><span>Member since {new Date(profile.created_at).toLocaleDateString()}</span></div></div>
+ return <div className="page-content profile-page"><div className="profile-banner" style={profile.banner?{backgroundImage:`url(${profile.banner})`}:{}}/><div className="profile-card"><Avatar name={profile.username} src={profile.avatar} size="xl" presence={profile.presence}/><div className="profile-actions">{own?<Button onClick={()=>setEditOpen(true)}>Edit profile</Button>:<><Button onClick={()=>void friend()}>{relationship?.status==='accepted'?'Remove friend':relationship?.status==='pending'?(relationship.direction==='incoming'?'Accept request':'Cancel request'):'Add friend'}</Button><Button variant="secondary" onClick={()=>void dm()}><MessageCircle size={15}/> Message</Button><Button variant="ghost" onClick={()=>void block()}>{blocked?'Unblock':'Block'}</Button></>}</div><h1>{profile.username}</h1><p className="profile-status">{profile.status_text||'No status set'}</p><p>{profile.bio||'This user has not written a bio yet.'}</p><div className="profile-meta"><span><Activity size={14}/> {own?'Your account':profile.presence}</span><span>Member since {new Date(profile.created_at).toLocaleDateString()}</span></div></div>
  {editOpen&&<Modal title="Edit profile" onClose={()=>setEditOpen(false)}><form onSubmit={save} className="form-stack"><Field label="Username"><input value={form.username} onChange={e=>setForm({...form,username:e.target.value})} minLength={3} maxLength={24} required/></Field><Field label="Bio"><textarea value={form.bio} onChange={e=>setForm({...form,bio:e.target.value})} maxLength={300}/></Field><Field label="Status"><input value={form.status_text} onChange={e=>setForm({...form,status_text:e.target.value})} maxLength={80}/></Field><Field label="Avatar image URL"><input value={form.avatar} onChange={e=>setForm({...form,avatar:e.target.value})} placeholder="https://…"/></Field><Field label="Banner image URL"><input value={form.banner} onChange={e=>setForm({...form,banner:e.target.value})} placeholder="https://…"/></Field><div className="modal-actions"><Button variant="secondary" onClick={()=>setEditOpen(false)}>Cancel</Button><Button type="submit"><Save size={15}/> Save profile</Button></div></form></Modal>}
  </div>;
 }
 
 export function InvitePage(){
  const {inviteCode}=useParams();const navigate=useNavigate();const toast=useToast();const [invite,setInvite]=useState<any>(null);const [loading,setLoading]=useState(true);const [joined,setJoined]=useState(false);
- useEffect(()=>{api<any>(`/invites/${inviteCode}`).then(r=>setInvite(r.invite)).catch(e=>toast.show(e.message,'error')).finally(()=>setLoading(false));},[inviteCode]);
+ useEffect(()=>{
+  let active=true;
+  setLoading(true);setInvite(null);setJoined(false);
+  api<any>(`/invites/${inviteCode}`)
+   .then(r=>{if(active)setInvite(r.invite);})
+   .catch(e=>{if(active)toast.show(e.message,'error');})
+   .finally(()=>{if(active)setLoading(false);});
+  return()=>{active=false;};
+ },[inviteCode]);
  const join=async()=>{try{const r=await post<any>(`/invites/${inviteCode}/join`);setJoined(true);toast.show('You joined the server.','success');navigate(`/channels/${r.serverId}`);}catch(e:any){toast.show(e.message,'error');}};
  if(loading)return <Loading/>;if(!invite)return <EmptyState title="Invite unavailable" description="This invite may have expired, reached its use limit, or been revoked."/>;
  return <div className="invite-page"><div className="invite-card"><div className="invite-logo"><img src="/relay-mark.svg" alt="Relay"/></div><span className="eyebrow">YOU'VE BEEN INVITED</span><h1>{invite.server.name}</h1><p>{invite.server.description||'Join this Relay community to chat and share.'}</p><div className="invite-count"><Users size={16}/>{invite.server.member_count} members</div><Button onClick={()=>void join()} disabled={joined}>{joined?'Joined':'Accept invite'} <ArrowRight size={16}/></Button><Link to="/home">Decline and return home</Link></div></div>;
@@ -145,7 +169,7 @@ export function InboxPage(){
 export function HelpPage(){return <div className="page-content"><PageHeader title="Relay help" subtitle="A quick guide to your communities and conversations."/><div className="help-grid">{[['Getting started','Set up your profile, add a friend, join or create a community, and send your first message.'],['Channels and messages','Text channels support messages, replies, edits, reactions, pins, search, saved drafts, attachments, and shared-media browsing. Enter sends; Shift+Enter adds a new line.'],['Friends and DMs','Send friend requests by exact username. Incoming and outgoing requests appear in Friends. Direct messages respect current privacy and block settings, and show read receipts.'],['Voice','Voice channels support microphone audio, camera, and screen sharing. Browser permissions are required, and TURN relay settings may be needed on restrictive networks.'],['Account and safety','Manage your password, sessions, blocks, privacy, notifications, appearance, accessibility, and keybind preferences in Settings.'],['Service setup','Hosted attachments require S3-compatible storage credentials. Password recovery requires an email provider. Relay Plus and Shop are previews; no payments are processed.']].map(([title,body])=><article className="help-card" key={title}><h3>{title}</h3><p>{body}</p></article>)}</div></div>;}
 export function EventsPage(){
  const toast=useToast();const {user}=useAuth();const [events,setEvents]=useState<any[]>([]);const [servers,setServers]=useState<any[]>([]);const [modalOpen,setModalOpen]=useState(false);const [editing,setEditing]=useState<any>(null);const [form,setForm]=useState<any>({serverId:'',title:'',description:'',starts_at:'',location:''});const [loading,setLoading]=useState(true);const [saving,setSaving]=useState(false);
- const load=async()=>{try{const [e,s]=await Promise.all([api<any>('/events'),api<any>('/servers')]);setEvents(e.events);setServers(s.servers);if(!form.serverId&&s.servers[0])setForm((f:any)=>({...f,serverId:s.servers[0].id}));}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};
+ const load=async()=>{try{const [e,s]=await Promise.all([api<any>('/events'),api<any>('/servers')]);setEvents(e.events||[]);const permitted=new Set<string>(e.create_server_ids||[]);const manageable=(s.servers||[]).filter((server:any)=>permitted.has(server.id));setServers(manageable);if(!form.serverId&&manageable[0])setForm((f:any)=>({...f,serverId:manageable[0].id}));}catch(e:any){toast.show(e.message,'error');}finally{setLoading(false);}};
  useEffect(()=>{void load();},[]);
  const toLocalInput=(value:string)=>{const date=new Date(value);date.setMinutes(date.getMinutes()-date.getTimezoneOffset());return date.toISOString().slice(0,16);};
  const openCreate=()=>{setEditing(null);setForm({serverId:servers[0]?.id||'',title:'',description:'',starts_at:'',location:''});setModalOpen(true);};
@@ -155,8 +179,32 @@ export function EventsPage(){
  const cancelRsvp=async(event:any)=>{try{await del(`/events/${event.id}/rsvp`);await load();}catch(err:any){toast.show(err.message,'error');}};
  const deleteEvent=async(event:any)=>{if(!window.confirm(`Cancel “${event.title}”?`))return;try{await del(`/events/${event.id}`);await load();toast.show('Event cancelled.','success');}catch(err:any){toast.show(err.message,'error');}};
  return <div className="page-content"><PageHeader title="Events" subtitle="See what your communities have planned." actions={<Button onClick={openCreate} disabled={!servers.length}><Plus size={16}/> Create event</Button>}/>
- {loading?<Loading/>:events.length?<div className="event-list">{events.map(event=><article className="event-card" key={event.id}><div className="event-date"><b>{new Date(event.starts_at).toLocaleDateString([], {day:'2-digit'})}</b><span>{new Date(event.starts_at).toLocaleDateString([], {month:'short'})}</span></div><div className="event-content"><span className="eyebrow">{event.server_name}</span><h3>{event.title}</h3><p>{event.description||'Community event'}</p><div className="event-meta"><span><Clock size={14}/>{new Date(event.starts_at).toLocaleString()}</span><span><Users size={14}/>{event.going_count} going</span>{event.location&&<span>{event.location}</span>}</div></div><div className="event-actions">{event.my_rsvp?<Button variant="secondary" onClick={()=>void cancelRsvp(event)}>{event.my_rsvp==='going'?'Going':'Interested'} · Cancel</Button>:<><Button onClick={()=>void rsvp(event,'going')}>I'm going</Button><Button variant="ghost" onClick={()=>void rsvp(event,'interested')}>Interested</Button></>}{event.creator_id===user?.id&&<><Button variant="ghost" onClick={()=>openEdit(event)}>Edit</Button><Button variant="danger" onClick={()=>void deleteEvent(event)}>Cancel event</Button></>}</div></article>)}</div>:<EmptyState title="No upcoming events" description="Create an event in one of your servers and invite the community." icon={CalendarDays}/>}
+ {loading?<Loading/>:events.length?<div className="event-list">{events.map(event=><article className="event-card" key={event.id}><div className="event-date"><b>{new Date(event.starts_at).toLocaleDateString([], {day:'2-digit'})}</b><span>{new Date(event.starts_at).toLocaleDateString([], {month:'short'})}</span></div><div className="event-content"><span className="eyebrow">{event.server_name}</span><h3>{event.title}</h3><p>{event.description||'Community event'}</p><div className="event-meta"><span><Clock size={14}/>{new Date(event.starts_at).toLocaleString()}</span><span><Users size={14}/>{event.going_count} going</span>{event.location&&<span>{event.location}</span>}</div></div><div className="event-actions">{event.my_rsvp?<Button variant="secondary" onClick={()=>void cancelRsvp(event)}>{event.my_rsvp==='going'?'Going':'Interested'} · Cancel</Button>:<><Button onClick={()=>void rsvp(event,'going')}>I'm going</Button><Button variant="ghost" onClick={()=>void rsvp(event,'interested')}>Interested</Button></>}{(event.can_manage||event.creator_id===user?.id)&&<><Button variant="ghost" onClick={()=>openEdit(event)}>Edit</Button><Button variant="danger" onClick={()=>void deleteEvent(event)}>Cancel event</Button></>}</div></article>)}</div>:<EmptyState title="No upcoming events" description={servers.length?"Create an event in a community you manage and invite the community.":"You do not have a community where your role can create events yet."} icon={CalendarDays}/>}
  {modalOpen&&<Modal title={editing?'Edit event':'Create an event'} onClose={()=>{setModalOpen(false);setEditing(null);}}><form className="form-stack" onSubmit={submit}>{!editing&&<Field label="Server"><select value={form.serverId} onChange={e=>setForm({...form,serverId:e.target.value})} required>{servers.map((server:any)=><option value={server.id} key={server.id}>{server.name}</option>)}</select></Field>}<Field label="Event name"><input value={form.title} onChange={e=>setForm({...form,title:e.target.value})} maxLength={100} minLength={2} required/></Field><Field label="Description"><textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})} maxLength={1000}/></Field><Field label="Date and time"><input type="datetime-local" value={form.starts_at} onChange={e=>setForm({...form,starts_at:e.target.value})} required/></Field><Field label="Location or voice channel"><input value={form.location} onChange={e=>setForm({...form,location:e.target.value})} maxLength={120}/></Field><div className="modal-actions"><Button variant="secondary" onClick={()=>{setModalOpen(false);setEditing(null);}}>Cancel</Button><Button type="submit" disabled={saving}>{saving?'Saving…':editing?'Save changes':'Create event'}</Button></div></form></Modal>}
+ </div>;
+}
+
+export function BookmarksPage(){
+ const navigate=useNavigate();const toast=useToast();const [bookmarks,setBookmarks]=useState<any[]>([]);const [loading,setLoading]=useState(true);
+ useEffect(()=>{let active=true;api<{bookmarks:any[]}>('/bookmarks').then(result=>{if(active)setBookmarks(result.bookmarks||[]);}).catch(error=>{if(active)toast.show(error.message,'error');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[]);
+ const remove=async(item:any)=>{try{await del(`/messages/${item.id}/bookmark`);setBookmarks(current=>current.filter(saved=>saved.id!==item.id));toast.show('Message removed from saved items.','success');}catch(error:any){toast.show(error.message,'error');}};
+ return <div className="page-content">
+  <PageHeader title="Saved messages" subtitle="Keep important messages from your direct chats and communities in one place."/>
+  <div className="settings-card">
+   <h3>Saved items · {bookmarks.length}</h3>
+   {loading?<Loading label="Loading saved messages"/>:bookmarks.length?<div className="saved-message-list">{bookmarks.map(item=><article className="report-row" key={item.id}>
+    <div className="saved-message-copy">
+     <span className="eyebrow">{item.source_label}</span>
+     <p>{item.content||'Attachment'}</p>
+     {!!item.attachments?.length&&<small>Attachments: {item.attachments.map((file:any)=>file.filename).join(', ')}</small>}
+     <small>Saved {new Date(item.saved_at).toLocaleString()} · Sent by {item.username}</small>
+    </div>
+    <div className="event-actions">
+     <Button variant="secondary" onClick={()=>navigate(item.href)}>Open conversation</Button>
+     <Button variant="danger" onClick={()=>void remove(item)}>Remove</Button>
+    </div>
+   </article>)}</div>:<EmptyState title="No saved messages yet" description="Open a message’s actions and choose “Save message” to keep it here." icon={Bookmark}/>}
+  </div>
  </div>;
 }
 
@@ -186,7 +234,7 @@ export function InfoPage({kind}:{kind:'library'|'premium'|'shop'}){
   <div className="activity-library-tools"><SearchInput value={query} onChange={setQuery} placeholder="Search activities…"/><div className="activity-library-categories" role="group" aria-label="Filter activities">{categories.map(item=><button key={item} className={category===item?'active':''} onClick={()=>setCategory(item)}>{item}</button>)}</div><span className="activity-result-count">{visible.length} activities</span></div>
   {visible.length?<div className="activity-library-grid">{visible.map(item=><article className="activity-card" key={item.title}><div className="activity-card-meta"><span>{item.category}</span><span>READY TO USE</span></div><h2>{item.title}</h2><p>{item.description}</p><pre>{item.prompt}</pre><Button variant="secondary" onClick={()=>void copy(item.prompt)}><Copy size={15}/> Copy activity</Button></article>)}</div>:<EmptyState title="No activities found" description="Try a different search or category." action={<Button variant="secondary" onClick={()=>{setQuery('');setCategory('All');}}>Clear filters</Button>}/>}
  </div>;
- const config={premium:{title:'Relay Plus',subtitle:'Optional premium features are informational in this preview.',icon:Gift,cards:[['Expanded profile themes','More profile appearance choices.','Concept preview'],['Larger uploads','Higher attachment limits for hosted plans.','Not enabled'],['Community perks','Extra server customization options.','Not enabled']]},shop:{title:'Relay shop',subtitle:'A catalogue preview. No checkout or payment processing is connected.',icon:Gift,cards:[['Profile accent pack','Colour presets for your profile.','Preview only'],['Server icon collection','Original community icon concepts.','Preview only'],['Seasonal decorations','Small profile decoration concepts.','Preview only']]}}[kind];
+ const config={premium:{title:'Relay Boost',subtitle:'Support Relay and preview upcoming perks. Boost checkout is not connected yet.',icon:Zap,cards:[['Expanded profile themes','More ways to personalize your profile.','Preview only'],['Larger uploads','Higher attachment limits for supported hosted plans.','Not enabled'],['Community perks','Extra customization for your favourite communities.','Preview only']]},shop:{title:'Relay shop',subtitle:'A catalogue preview. No checkout or payment processing is connected.',icon:Gift,cards:[['Profile accent pack','Colour presets for your profile.','Preview only'],['Server icon collection','Original community icon concepts.','Preview only'],['Seasonal decorations','Small profile decoration concepts.','Preview only']]}}[kind];
  const Icon=config.icon;
  return <div className="page-content"><PageHeader title={config.title} subtitle={config.subtitle}/><div className="feature-grid">{config.cards.map(([title,desc,status])=><article className="feature-card" key={title}><div className="feature-icon"><Icon size={22}/></div><h3>{title}</h3><p>{desc}</p><span className="status-label">{status}</span></article>)}</div><div className="disclosure-note"><Lock size={16}/> This page is preview information only. No payments, purchases, or paid services are activated.</div></div>;
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'relay-shell-v1';
+const CACHE_NAME = 'relay-shell-v2';
 const SHELL_URLS = ['/', '/home', '/manifest.webmanifest', '/relay-mark.svg'];
 
 self.addEventListener('install', event => {
@@ -23,25 +23,34 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
   if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request).then(response => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put('/', copy));
+    event.respondWith((async () => {
+      try {
+        const response = await fetch(request);
+        if (response.ok) {
+          const copy = response.clone();
+          await caches.open(CACHE_NAME).then(cache => cache.put('/', copy));
+        }
         return response;
-      }).catch(() => caches.match('/') || caches.match('/home'))
-    );
+      } catch {
+        return (await caches.match('/')) || (await caches.match('/home')) || Response.error();
+      }
+    })());
     return;
   }
 
-  if (url.pathname.startsWith('/assets/') || /\.(svg|webmanifest)$/.test(url.pathname)) {
-    event.respondWith(
-      caches.match(request).then(cached => {
-        const update = fetch(request).then(response => {
-          if (response.ok) caches.open(CACHE_NAME).then(cache => cache.put(request, response.clone()));
-          return response;
-        }).catch(() => cached);
-        return cached || update;
-      })
-    );
+  if (url.pathname.startsWith('/assets/') || /\\.(svg|webmanifest)$/.test(url.pathname)) {
+    event.respondWith((async () => {
+      const cached = await caches.match(request);
+      try {
+        const response = await fetch(request);
+        if (response.ok) {
+          const copy = response.clone();
+          await caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+        }
+        return response;
+      } catch {
+        return cached || Response.error();
+      }
+    })());
   }
 });
